@@ -1,0 +1,153 @@
+# Controlled-memory PEFT probe
+
+This repository implements the pilot experiment discussed in the project chats:
+
+1. Generate fictional facts with known truth values.
+2. Assign every non-OOD fact to exactly one of two complementary LoRA adapters.
+3. Independently split entities into probe train, validation, and test sets.
+4. Generate answers from Adapter A, Adapter B, and the untouched base model.
+5. save adapter-on and adapter-disabled **base-replay** hidden-state features.
+6. Train matched correctness-only, shuffled-exposure, and genuine-exposure probes.
+7. Remove the adapters and test transfer on TriviaQA and TruthfulQA.
+
+Every expensive stage is resumable. LoRA training uses regular Trainer checkpoints, generation is
+written in atomic shards, and probe training saves an atomic checkpoint after every epoch.
+
+## Default choices
+
+| Setting | Default | Alternatives |
+|---|---|---|
+| Base model | `Qwen/Qwen2.5-3B-Instruct` | Set any causal instruction model in YAML; the smoke config uses Qwen2.5-1.5B |
+| GPU profile | One 24 GB GPU, 4-bit QLoRA | Set `load_in_4bit: false` on a 40–80 GB GPU; lower batch sizes for <=16 GB |
+| Scope | Full pilot, 3,000 facts, five probe seeds | Use `configs/smoke.yaml` or reduce facts/seeds in a copied config |
+| Main representation | Base replay | Adapter-on representations are included as a prespecified ablation |
+| TruthfulQA | MC1 | `truthfulqa_mode: generation` enables conservative reference matching and excludes ambiguous rows |
+
+Qwen is ungated, so the default does not require accepting a model license. Set `HF_TOKEN` only if
+you change to a gated model.
+
+## One-time cluster setup
+
+From a login node in this repository:
+
+```bash
+module load python/3.11  # use the equivalent module on your cluster
+bash scripts/setup_env.sh
+export PYTHON_BIN="$PWD/.venv/bin/python"
+export HF_HOME="${SCRATCH:-$PWD}/huggingface"
+$PYTHON_BIN -m peft_probe --config configs/pilot.yaml validate
+```
+
+The environment script only creates `.venv` and installs this package. If your cluster supplies
+PyTorch through a module or Conda, activate that environment and install with `pip install -e .`
+instead, then point `PYTHON_BIN` to its Python executable.
+
+## Submit the complete SLURM pipeline
+
+```bash
+export PYTHON_BIN="$PWD/.venv/bin/python"
+export HF_HOME="${SCRATCH:-$PWD}/huggingface"
+export SLURM_PARTITION=gpu
+export SLURM_CPU_PARTITION=cpu       # optional; defaults to SLURM_PARTITION
+export SLURM_ACCOUNT=my_account      # omit if the cluster does not require it
+bash slurm/submit_pipeline.sh configs/pilot.yaml
+```
+
+The submission script creates this dependency graph:
+
+```text
+data -> adapters A/B -> synthetic feature shards -> intervention gate -> probes -> evaluation
+   \-> TriviaQA/TruthfulQA feature shards ------------------------------/
+```
+
+GPU work uses job arrays. Edit the resource headers in `slurm/gpu.sbatch` and
+`slurm/cpu.sbatch` if your cluster uses a different GPU request syntax, memory limit, or wall time.
+Partition and account should normally be supplied through the environment variables above.
+
+### Preemption and wall-time recovery
+
+- LoRA checkpoints are under `outputs/<run>/adapters/adapter_*/checkpoints/`.
+- Synthetic and benchmark inference writes `shard_XXXXX.pt` atomically and skips finished shards.
+- Probe checkpoints are `last_checkpoint.pt` files saved after every epoch.
+- `_SUCCESS.json` is written only after a stage has completely finished.
+- `_RUN.json` stores the full configuration and prevents artifacts from different configurations
+  from being mixed; change `experiment.output_dir` when changing experiment settings.
+- The SLURM scripts request `--requeue` and requeue on the warning signal before wall time.
+
+Simply resubmitting the pipeline or the failed stage resumes it. Do **not** pass `--force` unless
+you intentionally want to recompute completed artifacts under the same configuration.
+
+## Manual or interactive run
+
+The same stages can be run without the submission helper:
+
+```bash
+CFG=configs/smoke.yaml
+python -m peft_probe --config "$CFG" generate-data
+python -m peft_probe --config "$CFG" train-adapter --adapter a
+python -m peft_probe --config "$CFG" train-adapter --adapter b
+python -m peft_probe --config "$CFG" collect-synthetic --source adapter_a
+python -m peft_probe --config "$CFG" collect-synthetic --source adapter_b
+python -m peft_probe --config "$CFG" collect-synthetic --source base
+python -m peft_probe --config "$CFG" intervention-report
+python -m peft_probe --config "$CFG" train-probes
+python -m peft_probe --config "$CFG" collect-benchmark --benchmark trivia_qa
+python -m peft_probe --config "$CFG" collect-benchmark --benchmark truthful_qa
+python -m peft_probe --config "$CFG" evaluate --benchmark trivia_qa
+python -m peft_probe --config "$CFG" evaluate --benchmark truthful_qa
+```
+
+For a quick integration check, use `configs/smoke.yaml`. It exercises the complete code path with
+60 facts, one epoch, one probe seed, and 20 examples from each benchmark. It is not a scientific
+run.
+
+## Output layout
+
+```text
+outputs/<experiment>/
+├── data/                       # truth table, assignments, entity splits
+├── adapters/
+│   ├── adapter_a/{checkpoints,final}/
+│   └── adapter_b/{checkpoints,final}/
+├── features/
+│   ├── synthetic/{adapter_a,adapter_b,base}/shard_*.pt
+│   └── benchmarks/{trivia_qa,truthful_qa}/shard_*.pt
+├── probes/<feature_mode>/<variant>/seed_<n>/
+└── results/
+    ├── intervention_check.json
+    ├── trivia_qa/{metrics.json,predictions.jsonl,risk_coverage_*.jsonl}
+    └── truthful_qa/{metrics.json,predictions.jsonl,risk_coverage_*.jsonl}
+```
+
+`predictions.jsonl` retains every question, generated answer, label, confidence baseline, and probe
+risk so analyses can be reproduced without rerunning the LLM.
+
+## Scientific safeguards built into the code
+
+- Adapter assignment and detector entity splits are independent.
+- Adapter A/B have balanced alternating assignments within every relation.
+- Adapter training questions and collection questions use disjoint templates.
+- Withheld exposure is metadata, never a correctness label; answers are graded against the truth table.
+- Both probes receive identical correctness examples, including untouched-base generations.
+- Exposure loss applies only to A/B examples; base-model exposure is undefined and masked.
+- Shuffled exposure is permuted within source, relation, and split.
+- The full config stops before probe training if the exposed-minus-withheld accuracy gap is below 0.10.
+- Real benchmark labels are used only after probe training.
+- Results include log-probability and entropy baselines plus AUROC, AUPRC, Brier, ECE, AURC,
+  risk–coverage curves, and paired bootstrap differences.
+
+TruthfulQA MC1 is the default because it gives deterministic labels. Generation mode is available,
+but reference matching cannot reliably grade paraphrases; ambiguous generations are deliberately
+excluded and grading coverage is reported. A publication-quality generation experiment should add
+a prespecified human or validated judge protocol rather than silently treating unmatched text as
+false.
+
+## HaloScope baseline
+
+HaloScope should be reported as an external baseline, not as one of the three matched probes. Its
+official implementation is built around Llama-2 and OPT, custom attention/MLP hooks, and its own
+generation and BLEURT/ROUGE labeling pipeline. This repository therefore does not label a simplified
+Qwen reimplementation as “official HaloScope.” The benchmark shards retain base-model hidden states,
+labels, and generations needed to add a validated Qwen port. For a faithful reproduction, run the
+[official HaloScope repository](https://github.com/deeplearning-wisc/haloscope) with its supported
+model and dataset setup and report it in a separate comparison block.

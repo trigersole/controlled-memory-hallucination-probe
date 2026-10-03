@@ -1,0 +1,65 @@
+experiment:
+  name: qwen25_3b_memory_probe
+  seed: 42
+  output_dir: outputs/qwen25_3b_memory_probe
+
+model:
+  name_or_path: Qwen/Qwen2.5-3B-Instruct
+  trust_remote_code: false
+  dtype: bfloat16
+  load_in_4bit: true
+  attn_implementation: sdpa
+  max_sequence_length: 256
+
+data:
+  num_facts: 3000
+  ood_fraction: 0.10
+  detector_splits: [0.70, 0.15, 0.15]
+  relations: [birthplace, occupation, organization]
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  epochs: 5
+  learning_rate: 0.0002
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 8
+  save_steps: 100
+  logging_steps: 10
+
+collection:
+  sources: [adapter_a, adapter_b, base]
+  feature_modes: [base_replay, on_policy]
+  layer: -1
+  pooling: mean
+  max_new_tokens: 24
+  do_sample: false
+  batch_size: 4
+  shard_size: 100
+  minimum_memory_gap: 0.10
+  fail_on_small_gap: true
+
+probe:
+  architecture: linear
+  hidden_dim: 256
+  variants: [correctness, shuffled_exposure, genuine_exposure]
+  lambda_exposure: 1.0
+  epochs: 60
+  batch_size: 128
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 8
+  seeds: [11, 22, 33, 44, 55]
+
+benchmarks:
+  datasets: [trivia_qa, truthful_qa]
+  trivia_qa_dataset: mandarjoshi/trivia_qa
+  trivia_qa_config: rc.nocontext
+  truthfulqa_dataset: truthfulqa/truthful_qa
+  truthfulqa_mode: mc1
+  split: validation
+  max_examples: null
+  shard_size: 100
+  bootstrap_samples: 1000

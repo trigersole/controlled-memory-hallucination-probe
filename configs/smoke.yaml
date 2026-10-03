@@ -1,0 +1,59 @@
+experiment:
+  name: smoke_test
+  seed: 42
+  output_dir: outputs/smoke_test
+model:
+  name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  trust_remote_code: false
+  dtype: bfloat16
+  load_in_4bit: true
+  attn_implementation: sdpa
+  max_sequence_length: 128
+data:
+  num_facts: 60
+  ood_fraction: 0.10
+  detector_splits: [0.60, 0.20, 0.20]
+  relations: [birthplace, occupation, organization]
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  epochs: 1
+  learning_rate: 0.0002
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 2
+  save_steps: 5
+  logging_steps: 1
+collection:
+  sources: [adapter_a, adapter_b, base]
+  feature_modes: [base_replay]
+  layer: -1
+  pooling: mean
+  max_new_tokens: 12
+  do_sample: false
+  batch_size: 2
+  shard_size: 10
+  minimum_memory_gap: 0.0
+  fail_on_small_gap: false
+probe:
+  architecture: linear
+  hidden_dim: 64
+  variants: [correctness, shuffled_exposure, genuine_exposure]
+  lambda_exposure: 1.0
+  epochs: 5
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 2
+  seeds: [11]
+benchmarks:
+  datasets: [trivia_qa, truthful_qa]
+  trivia_qa_dataset: mandarjoshi/trivia_qa
+  trivia_qa_config: rc.nocontext
+  truthfulqa_dataset: truthfulqa/truthful_qa
+  truthfulqa_mode: mc1
+  split: validation
+  max_examples: 20
+  shard_size: 10
+  bootstrap_samples: 100
