@@ -2,8 +2,6 @@
 set -euo pipefail
 
 CONFIG=${1:-configs/pilot.yaml}
-PARTITION=${SLURM_PARTITION:-gpu}
-CPU_PARTITION=${SLURM_CPU_PARTITION:-$PARTITION}
 mkdir -p slurm/logs
 
 ACCOUNT_ARGS=()
@@ -13,30 +11,30 @@ fi
 
 COMMON=(--parsable --export=ALL --output=slurm/logs/%x-%A_%a.out --error=slurm/logs/%x-%A_%a.err)
 
-DATA_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$CPU_PARTITION" \
+DATA_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --job-name=memprobe-data slurm/cpu.sbatch "$CONFIG" generate-data)
 
-ADAPTER_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$PARTITION" \
+ADAPTER_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --array=0-1 --dependency="afterok:$DATA_JOB" \
   --job-name=memprobe-lora slurm/gpu.sbatch "$CONFIG" train-adapter)
 
-SYNTHETIC_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$PARTITION" \
+SYNTHETIC_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --array=0-2 --dependency="afterok:$ADAPTER_JOB" \
   --job-name=memprobe-features slurm/gpu.sbatch "$CONFIG" collect-synthetic)
 
-BENCHMARK_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$PARTITION" \
+BENCHMARK_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --array=0-1 --dependency="afterok:$DATA_JOB" \
   --job-name=memprobe-bench slurm/gpu.sbatch "$CONFIG" collect-benchmark)
 
-INTERVENTION_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$CPU_PARTITION" \
+INTERVENTION_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --dependency="afterok:$SYNTHETIC_JOB" \
   --job-name=memprobe-check slurm/cpu.sbatch "$CONFIG" intervention-report)
 
-PROBE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$CPU_PARTITION" \
+PROBE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --dependency="afterok:$INTERVENTION_JOB" \
   --job-name=memprobe-probes slurm/cpu.sbatch "$CONFIG" train-probes)
 
-EVALUATE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" --partition "$CPU_PARTITION" \
+EVALUATE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --array=0-1 --dependency="afterok:$PROBE_JOB:$BENCHMARK_JOB" \
   --job-name=memprobe-eval slurm/cpu.sbatch "$CONFIG" evaluate)
 

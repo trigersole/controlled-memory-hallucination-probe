@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+#SBATCH --partition=MGPU-TC2
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=08:00:00
+#SBATCH --mem=32G
+#SBATCH --time=05:50:00
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@120
 
@@ -40,4 +41,3 @@ case "$STAGE" in
     ;;
 esac
 wait $!
-
