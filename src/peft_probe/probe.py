@@ -21,19 +21,21 @@ class Probe(nn.Module):
     def __init__(self, input_dim: int, architecture: str, hidden_dim: int):
         super().__init__()
         if architecture == "linear":
-            self.trunk = nn.Identity()
-            representation_dim = input_dim
+            # A one-dimensional shared linear direction keeps correctness linear while
+            # allowing genuine/shuffled exposure supervision to affect that direction.
+            self.trunk = nn.Linear(input_dim, 1)
+            self.correctness_head = nn.Identity()
+            self.exposure_head = nn.Linear(1, 1)
         elif architecture == "mlp":
             self.trunk = nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(0.1),
             )
-            representation_dim = hidden_dim
+            self.correctness_head = nn.Linear(hidden_dim, 1)
+            self.exposure_head = nn.Linear(hidden_dim, 1)
         else:
             raise ValueError(f"Unknown probe architecture: {architecture}")
-        self.correctness_head = nn.Linear(representation_dim, 1)
-        self.exposure_head = nn.Linear(representation_dim, 1)
 
     def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         representation = self.trunk(features)
