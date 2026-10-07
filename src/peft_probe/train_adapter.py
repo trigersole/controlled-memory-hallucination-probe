@@ -116,7 +116,8 @@ def train(config: dict[str, Any], adapter: str, force: bool = False) -> Path:
         gradient_accumulation_steps=int(lora["gradient_accumulation_steps"]),
         save_steps=int(lora["save_steps"]),
         save_strategy="steps",
-        save_total_limit=3,
+        # Keep resume safety without retaining many large optimizer checkpoints.
+        save_total_limit=2,
         logging_steps=int(lora["logging_steps"]),
         logging_strategy="steps",
         bf16=use_bf16,
