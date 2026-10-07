@@ -47,22 +47,20 @@ instead, then point `PYTHON_BIN` to its Python executable.
 ```bash
 export PYTHON_BIN="$PWD/.venv/bin/python"
 export HF_HOME="${SCRATCH:-$PWD}/huggingface"
-export SLURM_PARTITION=gpu
-export SLURM_CPU_PARTITION=cpu       # optional; defaults to SLURM_PARTITION
 export SLURM_ACCOUNT=my_account      # omit if the cluster does not require it
 bash slurm/submit_pipeline.sh configs/pilot.yaml
 ```
 
-The submission script creates this dependency graph:
+The submission script creates one self-requeuing job, suitable for QOS policies that permit only
+one submitted job per user. It runs the stages sequentially:
 
 ```text
-data -> adapters A/B -> synthetic feature shards -> intervention gate -> probes -> evaluation
-   \-> TriviaQA/TruthfulQA feature shards ------------------------------/
+data -> adapters A/B -> synthetic features -> benchmark features -> intervention -> probes -> evaluation
 ```
 
-GPU work uses job arrays. Edit the resource headers in `slurm/gpu.sbatch` and
-`slurm/cpu.sbatch` if your cluster uses a different GPU request syntax, memory limit, or wall time.
-Partition and account should normally be supplied through the environment variables above.
+Progress is stored in `slurm/state/<config-name>.step`. The same job ID requeues before its wall
+time and resumes the current stage from its application checkpoint. Edit the resource header in
+`slurm/serial_pipeline.sbatch` if the cluster partition or limits change.
 
 ### Preemption and wall-time recovery
 
@@ -72,7 +70,7 @@ Partition and account should normally be supplied through the environment variab
 - `_SUCCESS.json` is written only after a stage has completely finished.
 - `_RUN.json` stores the full configuration and prevents artifacts from different configurations
   from being mixed; change `experiment.output_dir` when changing experiment settings.
-- The SLURM scripts request `--requeue` and requeue on the warning signal before wall time.
+- The serial SLURM job requests `--requeue` and requeues on the warning signal before wall time.
 
 Simply resubmitting the pipeline or the failed stage resumes it. Do **not** pass `--force` unless
 you intentionally want to recompute completed artifacts under the same configuration.

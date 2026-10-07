@@ -2,51 +2,29 @@
 set -euo pipefail
 
 CONFIG=${1:-configs/pilot.yaml}
-mkdir -p slurm/logs
+mkdir -p slurm/logs slurm/state
+
+CONFIG_NAME=$(basename "$CONFIG")
+RUN_NAME=${CONFIG_NAME%.*}
+STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}.step}
+
+if [[ "${RESET_PIPELINE:-0}" == "1" ]]; then
+  rm -f "$STATE_FILE" "${STATE_FILE}.tmp" "${STATE_FILE}.done"
+fi
 
 ACCOUNT_ARGS=()
 if [[ -n "${SLURM_ACCOUNT:-}" ]]; then
   ACCOUNT_ARGS=(--account "$SLURM_ACCOUNT")
 fi
 
-COMMON=(--parsable --export=ALL --output=slurm/logs/%x-%A_%a.out --error=slurm/logs/%x-%A_%a.err)
-
-DATA_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --job-name=memprobe-data slurm/cpu.sbatch "$CONFIG" generate-data)
-
-ADAPTER_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1%1 --dependency="afterok:$DATA_JOB" \
-  --job-name=memprobe-lora slurm/gpu.sbatch "$CONFIG" train-adapter)
-
-SYNTHETIC_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-2%1 --dependency="afterok:$ADAPTER_JOB" \
-  --job-name=memprobe-features slurm/gpu.sbatch "$CONFIG" collect-synthetic)
-
-BENCHMARK_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1%1 --dependency="afterok:$SYNTHETIC_JOB" \
-  --job-name=memprobe-bench slurm/gpu.sbatch "$CONFIG" collect-benchmark)
-
-INTERVENTION_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --dependency="afterok:$BENCHMARK_JOB" \
-  --job-name=memprobe-check slurm/cpu.sbatch "$CONFIG" intervention-report)
-
-PROBE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --dependency="afterok:$INTERVENTION_JOB" \
-  --job-name=memprobe-probes slurm/cpu.sbatch "$CONFIG" train-probes)
-
-EVALUATE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1%1 --dependency="afterok:$PROBE_JOB" \
-  --job-name=memprobe-eval slurm/cpu.sbatch "$CONFIG" evaluate)
+JOB_ID=$(sbatch --parsable --export=ALL,PIPELINE_STATE_FILE="$STATE_FILE" \
+  --output=slurm/logs/%x-%j.out --error=slurm/logs/%x-%j.err \
+  "${ACCOUNT_ARGS[@]}" --job-name=memprobe-serial \
+  slurm/serial_pipeline.sbatch "$CONFIG")
 
 cat <<EOF
-Submitted controlled-memory probe pipeline:
-  data:         $DATA_JOB
-  adapters:     $ADAPTER_JOB
-  synthetic:    $SYNTHETIC_JOB
-  benchmarks:   $BENCHMARK_JOB
-  intervention: $INTERVENTION_JOB
-  probes:       $PROBE_JOB
-  evaluation:   $EVALUATE_JOB
-
-Monitor with: squeue -j $DATA_JOB,$ADAPTER_JOB,$SYNTHETIC_JOB,$BENCHMARK_JOB,$INTERVENTION_JOB,$PROBE_JOB,$EVALUATE_JOB
+Submitted one self-requeuing controlled-memory pipeline job: $JOB_ID
+State file: $STATE_FILE
+Monitor with: squeue -j $JOB_ID
+Log: slurm/logs/memprobe-serial-$JOB_ID.out
 EOF
