@@ -8,11 +8,33 @@ import torch
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
-from transformers.trainer_utils import get_last_checkpoint
 
 from .config import config_fingerprint, output_dir
 from .io_utils import ensure_manifest, mark_complete, read_jsonl, seed_everything
 from .modeling import load_base_model, load_tokenizer, user_prompt
+
+
+def _last_valid_checkpoint(checkpoint_dir: Path) -> str | None:
+    """Return the newest complete Trainer/PEFT checkpoint, ignoring interrupted saves."""
+    candidates: list[tuple[int, Path]] = []
+    for path in checkpoint_dir.glob("checkpoint-*"):
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        candidates.append((step, path))
+
+    weight_names = (
+        "adapter_model.safetensors",
+        "adapter_model.bin",
+        "model.safetensors",
+        "pytorch_model.bin",
+    )
+    for _, path in sorted(candidates, reverse=True):
+        has_weights = any((path / name).is_file() for name in weight_names)
+        if has_weights and (path / "trainer_state.json").is_file():
+            return str(path)
+    return None
 
 
 class FactDataset(Dataset):
@@ -134,7 +156,7 @@ def train(config: dict[str, Any], adapter: str, force: bool = False) -> Path:
         train_dataset=dataset,
         data_collator=CausalCollator(tokenizer.pad_token_id),
     )
-    resume = None if force else get_last_checkpoint(str(checkpoint_dir))
+    resume = None if force else _last_valid_checkpoint(checkpoint_dir)
     trainer.train(resume_from_checkpoint=resume)
     final_dir.mkdir(parents=True, exist_ok=True)
     trainer.model.save_pretrained(final_dir)
