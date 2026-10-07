@@ -12,6 +12,7 @@ from .collect import collect
 from .config import initialize_output, load_config, output_dir
 from .probe import train_all, train_one
 from .synthetic import generate
+from .summarize import summarize_results
 from .train_adapter import train
 
 
@@ -44,6 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--benchmark", choices=("trivia_qa", "truthful_qa"), required=True)
     evaluation = subparsers.add_parser("evaluate", help="Evaluate every trained probe on a benchmark")
     evaluation.add_argument("--benchmark", choices=("trivia_qa", "truthful_qa"), required=True)
+    subparsers.add_parser("summarize", help="Write a compact Markdown analysis of completed results")
     return parser
 
 
@@ -87,6 +89,8 @@ def main() -> None:
         print(collect_benchmark(config, args.benchmark, force=args.force))
     elif args.command == "evaluate":
         print(evaluate_benchmark(config, args.benchmark, force=args.force))
+    elif args.command == "summarize":
+        print(summarize_results(config))
 
 
 if __name__ == "__main__":
