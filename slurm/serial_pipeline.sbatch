@@ -13,7 +13,9 @@
 set -euo pipefail
 
 CONFIG=${1:-configs/pilot.yaml}
-PYTHON_BIN=${PYTHON_BIN:-python}
+HALOSCOPE_DIR=${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}
+PYTHON_BIN=${HALOSCOPE_PYTHON:-${PYTHON_BIN:-$HALOSCOPE_DIR/.venv/bin/python}}
+PEFT_OVERLAY=${PEFT_OVERLAY:-${SCRATCH:-$HOME}/peft-probe-overlay}
 CONFIG_NAME=$(basename "$CONFIG")
 RUN_NAME=${CONFIG_NAME%.*}
 STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}.step}
@@ -21,7 +23,14 @@ TOTAL_STEPS=12
 
 cd "${SLURM_SUBMIT_DIR}"
 mkdir -p "$(dirname "$STATE_FILE")"
+export PYTHONPATH="${SLURM_SUBMIT_DIR}/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "HaloScope Python is not executable: $PYTHON_BIN" >&2
+  exit 2
+fi
+"$PYTHON_BIN" -c "import peft_probe; print('Job Python:', __import__('sys').executable)"
 
 requeue_current() {
   echo "Time-limit warning received. Requeuing job $SLURM_JOB_ID without advancing step ${STEP:-unknown}."
