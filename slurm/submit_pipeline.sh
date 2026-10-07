@@ -15,19 +15,19 @@ DATA_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --job-name=memprobe-data slurm/cpu.sbatch "$CONFIG" generate-data)
 
 ADAPTER_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1 --dependency="afterok:$DATA_JOB" \
+  --array=0-1%1 --dependency="afterok:$DATA_JOB" \
   --job-name=memprobe-lora slurm/gpu.sbatch "$CONFIG" train-adapter)
 
 SYNTHETIC_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-2 --dependency="afterok:$ADAPTER_JOB" \
+  --array=0-2%1 --dependency="afterok:$ADAPTER_JOB" \
   --job-name=memprobe-features slurm/gpu.sbatch "$CONFIG" collect-synthetic)
 
 BENCHMARK_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1 --dependency="afterok:$DATA_JOB" \
+  --array=0-1%1 --dependency="afterok:$SYNTHETIC_JOB" \
   --job-name=memprobe-bench slurm/gpu.sbatch "$CONFIG" collect-benchmark)
 
 INTERVENTION_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --dependency="afterok:$SYNTHETIC_JOB" \
+  --dependency="afterok:$BENCHMARK_JOB" \
   --job-name=memprobe-check slurm/cpu.sbatch "$CONFIG" intervention-report)
 
 PROBE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
@@ -35,7 +35,7 @@ PROBE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
   --job-name=memprobe-probes slurm/cpu.sbatch "$CONFIG" train-probes)
 
 EVALUATE_JOB=$(sbatch "${COMMON[@]}" "${ACCOUNT_ARGS[@]}" \
-  --array=0-1 --dependency="afterok:$PROBE_JOB:$BENCHMARK_JOB" \
+  --array=0-1%1 --dependency="afterok:$PROBE_JOB" \
   --job-name=memprobe-eval slurm/cpu.sbatch "$CONFIG" evaluate)
 
 cat <<EOF
