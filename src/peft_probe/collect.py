@@ -28,7 +28,9 @@ def normalize(text: str) -> str:
 
 def grade_synthetic(answer: str, expected: str) -> tuple[int, int]:
     normalized_answer = normalize(answer)
-    abstained = int(any(pattern in normalized_answer for pattern in ABSTENTION_PATTERNS))
+    abstained = int(
+        any(normalize(pattern) in normalized_answer for pattern in ABSTENTION_PATTERNS)
+    )
     normalized_expected = normalize(expected)
     correct = int(bool(normalized_expected) and normalized_expected in normalized_answer and not abstained)
     return correct, abstained
