@@ -31,8 +31,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 OUTPUT_DIR=$("$PYTHON_BIN" -c \
-  'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["experiment"]["output_dir"])' \
+  'import pathlib, sys, yaml; print(pathlib.Path(yaml.safe_load(open(sys.argv[1]))["experiment"]["output_dir"]).resolve())' \
   "$CONFIG")
+OUTPUT_ROOT=$("$PYTHON_BIN" -c 'import pathlib; print(pathlib.Path("outputs").resolve())')
+case "$OUTPUT_DIR/" in
+  "$OUTPUT_ROOT/"*) ;;
+  *)
+    echo "Refusing derived-artifact reset outside $OUTPUT_ROOT: $OUTPUT_DIR" >&2
+    exit 2
+    ;;
+esac
 CONFIG_NAME=$(basename "$CONFIG")
 RUN_NAME=${CONFIG_NAME%.*}
 STATE_ID=$("$PYTHON_BIN" -c \
