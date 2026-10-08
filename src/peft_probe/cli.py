@@ -14,6 +14,7 @@ from .probe import train_all, train_one
 from .synthetic import generate
 from .summarize import summarize_results
 from .train_adapter import train
+from .versioning import artifact_metadata
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -62,6 +63,7 @@ def _validate(config: dict) -> None:
         "cuda_device_count": torch.cuda.device_count(),
         "model": config["model"]["name_or_path"],
         "output_dir": str(output_dir(config)),
+        **artifact_metadata(),
     }
     print(json.dumps(information, indent=2))
 

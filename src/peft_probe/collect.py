@@ -47,6 +47,13 @@ def _pool_hidden(hidden: torch.Tensor, token_mask: torch.Tensor, pooling: str) -
     raise ValueError(f"Unknown pooling method: {pooling}")
 
 
+def _replay_attention_mask(
+    prompt_attention: torch.Tensor, answer_mask: torch.Tensor
+) -> torch.Tensor:
+    """Preserve the tokenizer's prompt mask when PAD and EOS share an id."""
+    return torch.cat([prompt_attention.bool(), answer_mask.bool()], dim=1)
+
+
 def _adapter_context(model, disabled: bool):
     if disabled and isinstance(model, PeftModel):
         return model.disable_adapter()
@@ -97,7 +104,7 @@ def _batch_generate_and_extract(
         score_count += active
     score_count = score_count.clamp_min(1)
 
-    full_attention = sequences.ne(tokenizer.pad_token_id)
+    full_attention = _replay_attention_mask(tokens["attention_mask"], answer_mask)
     content_mask = torch.zeros_like(full_attention)
     content_mask[:, input_width:] = answer_mask
     feature_tensors: dict[str, torch.Tensor] = {}

@@ -58,9 +58,23 @@ one submitted job per user. It runs the stages sequentially:
 data -> adapters A/B -> synthetic features -> benchmark features -> intervention -> probes -> evaluation
 ```
 
-Progress is stored in `slurm/state/<config-name>.step`. The same job ID requeues before its wall
-time and resumes the current stage from its application checkpoint. Edit the resource header in
-`slurm/serial_pipeline.sbatch` if the cluster partition or limits change.
+Progress is stored in a configuration- and schema-keyed file under `slurm/state/`. The same job
+ID requeues before its wall time and resumes the current stage from its application checkpoint.
+Edit the resource header in `slurm/serial_pipeline.sbatch` if the cluster partition or limits
+change.
+
+### Refresh an older completed run after analysis-schema changes
+
+The corrected-analysis job preserves generated data and LoRA adapters, archives the small prior
+result JSON files, removes only regenerable features/probes/results, and rebuilds all affected
+artifacts with checkpointed single-job execution:
+
+```bash
+sbatch slurm/rerun_corrected_analysis.sbatch configs/pilot_llama2.yaml
+```
+
+Use this only for a completed pre-schema-v3 run. Subsequent schema-v3 runs should use the normal
+submission script.
 
 ### Preemption and wall-time recovery
 

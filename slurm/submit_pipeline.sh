@@ -26,7 +26,10 @@ fi
 
 CONFIG_NAME=$(basename "$CONFIG")
 RUN_NAME=${CONFIG_NAME%.*}
-STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}.step}
+STATE_ID=$("$PYTHON_BIN" -c \
+  'import sys; from peft_probe.config import config_fingerprint, load_config; from peft_probe.versioning import PIPELINE_SCHEMA_VERSION; print(f"{config_fingerprint(load_config(sys.argv[1]))}-v{PIPELINE_SCHEMA_VERSION}")' \
+  "$CONFIG")
+STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}-${STATE_ID}.step}
 
 if [[ "${RESET_PIPELINE:-0}" == "1" ]]; then
   rm -f "$STATE_FILE" "${STATE_FILE}.tmp" "${STATE_FILE}.done"

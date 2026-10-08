@@ -9,6 +9,8 @@ from typing import Any, Iterable
 import numpy as np
 import torch
 
+from .versioning import PIPELINE_SCHEMA_VERSION, artifact_metadata
+
 
 def seed_everything(seed: int) -> None:
     random.seed(seed)
@@ -59,7 +61,7 @@ def completed(path: str | Path) -> bool:
 
 
 def mark_complete(path: str | Path, metadata: dict[str, Any] | None = None) -> None:
-    atomic_json(path, {"complete": True, **(metadata or {})})
+    atomic_json(path, {"complete": True, **artifact_metadata(), **(metadata or {})})
 
 
 def ensure_manifest(directory: str | Path, fingerprint: str, force: bool = False) -> None:
@@ -73,7 +75,15 @@ def ensure_manifest(directory: str | Path, fingerprint: str, force: bool = False
                 f"Configuration changed for resumable stage {directory}. Use a new experiment.output_dir "
                 "or pass --force to intentionally replace its artifacts."
             )
-    atomic_json(manifest, {"config_fingerprint": fingerprint})
+        previous_schema = previous.get("pipeline_schema_version", 1)
+        if previous_schema != PIPELINE_SCHEMA_VERSION and not force:
+            raise RuntimeError(
+                f"Artifact schema changed for resumable stage {directory}: "
+                f"found v{previous_schema}, expected v{PIPELINE_SCHEMA_VERSION}. "
+                "Use a new experiment.output_dir or pass --force after intentionally "
+                "invalidating downstream artifacts."
+            )
+    atomic_json(manifest, {"config_fingerprint": fingerprint, **artifact_metadata()})
 
 
 def chunks(items: list[Any], size: int) -> Iterable[tuple[int, list[Any]]]:

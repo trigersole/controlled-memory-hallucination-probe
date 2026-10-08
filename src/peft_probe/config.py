@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from .versioning import artifact_metadata
+
 
 def load_config(path: str | Path) -> dict[str, Any]:
     path = Path(path)
@@ -34,6 +36,7 @@ def initialize_output(config: dict[str, Any]) -> Path:
     run_file = root / "_RUN.json"
     fingerprint = config_fingerprint(config)
     clean = {key: value for key, value in config.items() if not key.startswith("_")}
+    payload = {"config_fingerprint": fingerprint, "config": clean, **artifact_metadata()}
     if run_file.exists():
         with run_file.open("r", encoding="utf-8") as handle:
             previous = json.load(handle)
@@ -42,9 +45,13 @@ def initialize_output(config: dict[str, Any]) -> Path:
                 f"{root} already belongs to a different configuration. Change experiment.output_dir "
                 "to start a new run; existing experimental artifacts will not be mixed."
             )
+        payload["initial_code_revision"] = previous.get(
+            "initial_code_revision", previous.get("code_revision", "unknown")
+        )
     else:
-        temporary = run_file.with_suffix(".json.tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump({"config_fingerprint": fingerprint, "config": clean}, handle, indent=2)
-        temporary.replace(run_file)
+        payload["initial_code_revision"] = payload["code_revision"]
+    temporary = run_file.with_suffix(".json.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    temporary.replace(run_file)
     return root

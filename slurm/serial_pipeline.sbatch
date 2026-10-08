@@ -18,11 +18,9 @@ PYTHON_BIN=${HALOSCOPE_PYTHON:-${PYTHON_BIN:-$HALOSCOPE_DIR/.venv/bin/python}}
 PEFT_OVERLAY=${PEFT_OVERLAY:-${SCRATCH:-$HOME}/peft-probe-overlay}
 CONFIG_NAME=$(basename "$CONFIG")
 RUN_NAME=${CONFIG_NAME%.*}
-STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}.step}
 TOTAL_STEPS=12
 
 cd "${SLURM_SUBMIT_DIR}"
-mkdir -p "$(dirname "$STATE_FILE")"
 export PYTHONPATH="${SLURM_SUBMIT_DIR}/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
 
@@ -30,6 +28,13 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "HaloScope Python is not executable: $PYTHON_BIN" >&2
   exit 2
 fi
+
+STATE_ID=$("$PYTHON_BIN" -c \
+  'import sys; from peft_probe.config import config_fingerprint, load_config; from peft_probe.versioning import PIPELINE_SCHEMA_VERSION; print(f"{config_fingerprint(load_config(sys.argv[1]))}-v{PIPELINE_SCHEMA_VERSION}")' \
+  "$CONFIG")
+STATE_FILE=${PIPELINE_STATE_FILE:-slurm/state/${RUN_NAME}-${STATE_ID}.step}
+mkdir -p "$(dirname "$STATE_FILE")"
+
 "$PYTHON_BIN" -c "import peft_probe; print('Job Python:', __import__('sys').executable)"
 
 requeue_current() {

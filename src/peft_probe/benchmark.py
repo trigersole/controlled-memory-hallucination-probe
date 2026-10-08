@@ -12,9 +12,15 @@ from datasets import load_dataset
 from .collect import _batch_generate_and_extract, load_feature_shards, normalize
 from .config import config_fingerprint, output_dir
 from .io_utils import atomic_json, atomic_jsonl, atomic_torch_save, chunks, ensure_manifest, mark_complete
-from .metrics import binary_error_metrics, bootstrap_metric_differences, risk_coverage
+from .metrics import (
+    binary_error_metrics,
+    bootstrap_metric_differences,
+    cluster_bootstrap_mean,
+    risk_coverage,
+)
 from .modeling import load_base_model, load_tokenizer
 from .probe import load_probe
+from .versioning import artifact_metadata
 
 
 def _prepare_trivia(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -225,6 +231,39 @@ def _probe_probabilities(model, payload: dict[str, Any], features: torch.Tensor)
     return torch.cat(probabilities).numpy()
 
 
+def _comparison_bundle(
+    probabilities: dict[tuple[str, str, int], np.ndarray],
+    labels: np.ndarray,
+    scored_mask: np.ndarray,
+    config: dict[str, Any],
+    baseline_variant: str,
+) -> dict[str, Any]:
+    per_seed: dict[str, Any] = {}
+    ensemble: dict[str, Any] = {}
+    seeds = [int(seed) for seed in config["probe"]["seeds"]]
+    samples = int(config["benchmarks"]["bootstrap_samples"])
+    experiment_seed = int(config["experiment"]["seed"])
+    for mode_index, mode in enumerate(config["collection"]["feature_modes"]):
+        proposed_runs = []
+        baseline_runs = []
+        for seed in seeds:
+            proposed = probabilities[(mode, "genuine_exposure", seed)][scored_mask]
+            baseline = probabilities[(mode, baseline_variant, seed)][scored_mask]
+            proposed_runs.append(proposed)
+            baseline_runs.append(baseline)
+            per_seed[f"{mode}/seed_{seed}"] = bootstrap_metric_differences(
+                labels, proposed, baseline, samples, seed
+            )
+        ensemble[mode] = bootstrap_metric_differences(
+            labels,
+            np.mean(proposed_runs, axis=0),
+            np.mean(baseline_runs, axis=0),
+            samples,
+            experiment_seed + 1000 + mode_index,
+        )
+    return {"per_seed": per_seed, "seed_ensemble": ensemble}
+
+
 def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -> Path:
     root = output_dir(config)
     target = root / "results" / name
@@ -241,7 +280,12 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
         records_by_mode[mode] = records
         features_by_mode[mode] = features
 
-    summary: dict[str, Any] = {"benchmark": name, "models": {}, "baselines": {}}
+    summary: dict[str, Any] = {
+        "benchmark": name,
+        "models": {},
+        "baselines": {},
+        **artifact_metadata(),
+    }
     default_records = records_by_mode[config["collection"]["feature_modes"][0]]
     scored_mask = np.asarray([record["correct"] >= 0 for record in default_records])
     labels = np.asarray([max(0, record["correct"]) for record in default_records], dtype=int)[scored_mask]
@@ -321,19 +365,20 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
                 for record, value in zip(default_records, risk, strict=True):
                     predictions[record["fact_id"]][label] = float(value)
 
-    comparisons: dict[str, Any] = {}
-    for mode in config["collection"]["feature_modes"]:
-        for seed in config["probe"]["seeds"]:
-            proposal = probabilities[(mode, "genuine_exposure", int(seed))][scored_mask]
-            baseline = probabilities[(mode, "correctness", int(seed))][scored_mask]
-            comparisons[f"{mode}/seed_{seed}"] = bootstrap_metric_differences(
-                labels,
-                proposal,
-                baseline,
-                int(config["benchmarks"]["bootstrap_samples"]),
-                int(seed),
-            )
-    summary["genuine_vs_correctness_bootstrap"] = comparisons
+    versus_correctness = _comparison_bundle(
+        probabilities, labels, scored_mask, config, "correctness"
+    )
+    versus_shuffled = _comparison_bundle(
+        probabilities, labels, scored_mask, config, "shuffled_exposure"
+    )
+    summary["genuine_vs_correctness_bootstrap"] = versus_correctness["per_seed"]
+    summary["genuine_vs_correctness_seed_ensemble_bootstrap"] = versus_correctness[
+        "seed_ensemble"
+    ]
+    summary["genuine_vs_shuffled_bootstrap"] = versus_shuffled["per_seed"]
+    summary["genuine_vs_shuffled_seed_ensemble_bootstrap"] = versus_shuffled[
+        "seed_ensemble"
+    ]
     seed_aggregate: dict[str, Any] = {}
     for mode in config["collection"]["feature_modes"]:
         for variant in config["probe"]["variants"]:
@@ -366,35 +411,37 @@ def intervention_report(config: dict[str, Any]) -> Path:
     exposed = np.asarray([record["correct"] for record in rows if record["exposure"] == 1])
     withheld = np.asarray([record["correct"] for record in rows if record["exposure"] == 0])
     paired: dict[str, dict[int, int]] = {}
+    fact_entities: dict[str, str] = {}
     for record in rows:
         paired.setdefault(record["fact_id"], {})[int(record["exposure"])] = int(record["correct"])
+        fact_entities[record["fact_id"]] = record["entity_id"]
+    differences_by_entity: dict[str, list[float]] = {}
+    for fact_id, values in paired.items():
+        if 0 in values and 1 in values:
+            differences_by_entity.setdefault(fact_entities[fact_id], []).append(values[1] - values[0])
     paired_differences = np.asarray(
-        [values[1] - values[0] for values in paired.values() if 0 in values and 1 in values],
-        dtype=float,
+        [value for values in differences_by_entity.values() for value in values], dtype=float
     )
     if not len(paired_differences):
         raise RuntimeError("No complementary exposed/withheld fact pairs were found")
-    gap = float(paired_differences.mean())
-    rng = np.random.default_rng(int(config["experiment"]["seed"]))
-    bootstrap_gaps = []
-    for _ in range(int(config["benchmarks"]["bootstrap_samples"])):
-        bootstrap_gaps.append(
-            float(rng.choice(paired_differences, size=len(paired_differences), replace=True).mean())
-        )
+    gap_statistics = cluster_bootstrap_mean(
+        {entity: np.asarray(values) for entity, values in differences_by_entity.items()},
+        int(config["benchmarks"]["bootstrap_samples"]),
+        int(config["experiment"]["seed"]),
+    )
+    gap = float(gap_statistics["mean"])
     minimum_gap = float(config["collection"].get("minimum_memory_gap", 0.0))
     report = {
         "accuracy_exposed": float(exposed.mean()),
         "accuracy_withheld": float(withheld.mean()),
         "memory_gap": gap,
-        "memory_gap_ci95": [
-            float(np.quantile(bootstrap_gaps, 0.025)),
-            float(np.quantile(bootstrap_gaps, 0.975)),
-        ],
+        "memory_gap_ci95": gap_statistics["ci95"],
         "minimum_required_gap": minimum_gap,
         "passed": gap >= minimum_gap,
         "num_exposed": int(len(exposed)),
         "num_withheld": int(len(withheld)),
         "num_paired_facts": int(len(paired_differences)),
+        "num_paired_entities": int(gap_statistics["num_clusters"]),
         "abstention_rate_exposed": float(
             np.mean([record["abstained"] for record in rows if record["exposure"] == 1])
         ),
@@ -402,6 +449,7 @@ def intervention_report(config: dict[str, Any]) -> Path:
             np.mean([record["abstained"] for record in rows if record["exposure"] == 0])
         ),
         "warning": "Do not interpret probe results unless the memory gap is clearly positive.",
+        **artifact_metadata(),
     }
     path = root / "results" / "intervention_check.json"
     atomic_json(path, report)

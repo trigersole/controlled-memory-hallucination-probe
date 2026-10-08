@@ -83,3 +83,25 @@ def bootstrap_metric_differences(
         for name, values in draws.items()
     }
 
+
+def cluster_bootstrap_mean(
+    values_by_cluster: dict[str, np.ndarray], samples: int, seed: int
+) -> dict[str, Any]:
+    """Bootstrap a mean by resampling independent clusters with replacement."""
+    if not values_by_cluster:
+        raise ValueError("At least one cluster is required")
+    clusters = sorted(values_by_cluster)
+    arrays = [np.asarray(values_by_cluster[key], dtype=float) for key in clusters]
+    if any(values.size == 0 for values in arrays):
+        raise ValueError("Clusters must not be empty")
+    observed = float(np.concatenate(arrays).mean())
+    rng = np.random.default_rng(seed)
+    draws = []
+    for _ in range(samples):
+        selected = rng.integers(0, len(arrays), size=len(arrays))
+        draws.append(float(np.concatenate([arrays[index] for index in selected]).mean()))
+    return {
+        "mean": observed,
+        "ci95": [float(np.quantile(draws, 0.025)), float(np.quantile(draws, 0.975))],
+        "num_clusters": len(arrays),
+    }

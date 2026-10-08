@@ -39,11 +39,56 @@ def _metric_row(label: str, values: dict[str, Any]) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
+def _append_comparison(
+    lines: list[str],
+    title: str,
+    comparisons: dict[str, Any],
+    ensemble: dict[str, Any],
+    feature_modes: list[str],
+) -> None:
+    lines.extend(
+        [
+            f"### {title}",
+            "",
+            "Positive deltas favor genuine exposure for AUROC/AUPRC; negative deltas favor it "
+            "for Brier/ECE/AURC. `Supported seeds` counts per-seed 95% CIs excluding zero "
+            "in the favorable direction.",
+            "",
+            "| Feature mode | Metric | Mean seed delta | Supported seeds | Ensemble delta | "
+            "Ensemble 95% CI |",
+            "|---|---|---:|---:|---:|---:|",
+        ]
+    )
+    for mode in feature_modes:
+        mode_runs = [value for key, value in comparisons.items() if key.startswith(f"{mode}/")]
+        for metric in METRICS:
+            deltas = [float(run[metric]["mean_difference"]) for run in mode_runs]
+            supported = 0
+            for run in mode_runs:
+                lower, upper = run[metric]["ci95"]
+                if metric in HIGHER_IS_BETTER and lower > 0:
+                    supported += 1
+                elif metric not in HIGHER_IS_BETTER and upper < 0:
+                    supported += 1
+            ensemble_result = ensemble[mode][metric]
+            lower, upper = ensemble_result["ci95"]
+            lines.append(
+                f"| {mode} | {metric} | {_number(fmean(deltas))} | "
+                f"{supported}/{len(mode_runs)} | "
+                f"{_number(ensemble_result['mean_difference'])} | "
+                f"[{_number(lower)}, {_number(upper)}] |"
+            )
+    lines.append("")
+
+
 def summarize_results(config: dict[str, Any]) -> Path:
     root = output_dir(config)
     intervention = _read_json(root / "results" / "intervention_check.json")
     lines = [
         "# Controlled-memory hallucination probe results",
+        "",
+        f"Pipeline schema: {intervention.get('pipeline_schema_version', 'unknown')}; "
+        f"code revision: `{intervention.get('code_revision', 'unknown')}`.",
         "",
         "## Intervention validity",
         "",
@@ -54,6 +99,7 @@ def summarize_results(config: dict[str, Any]) -> Path:
         f"[{_number(intervention['memory_gap_ci95'][0])}, "
         f"{_number(intervention['memory_gap_ci95'][1])}]",
         f"- Required gap: {_number(intervention['minimum_required_gap'])}",
+        f"- Cluster-bootstrap entities: {intervention.get('num_paired_entities', 'NA')}",
         f"- Gate passed: **{bool(intervention['passed'])}**",
         "",
     ]
@@ -69,6 +115,9 @@ def summarize_results(config: dict[str, Any]) -> Path:
                 f"abstention rate {_number(metrics['abstention_rate'])}.",
                 "",
                 "### Token-probability baselines",
+                "",
+                "Token baseline Brier/ECE values are descriptive only because these raw scores "
+                "were not calibrated on an independent split.",
                 "",
                 "| Model | AUROC | AUPRC | Brier | ECE | AURC |",
                 "|---|---:|---:|---:|---:|---:|",
@@ -89,36 +138,21 @@ def summarize_results(config: dict[str, Any]) -> Path:
         for label, values in metrics["seed_aggregate"].items():
             lines.append(_metric_row(label, values))
 
-        lines.extend(
-            [
-                "",
-                "### Genuine-exposure minus correctness-only bootstrap comparison",
-                "",
-                "Positive deltas favor genuine exposure for AUROC/AUPRC; negative deltas favor it "
-                "for Brier/ECE/AURC. `Supported seeds` counts 95% CIs excluding zero in the "
-                "favorable direction.",
-                "",
-                "| Feature mode | Metric | Mean delta | Supported seeds |",
-                "|---|---|---:|---:|",
-            ]
-        )
-        comparisons = metrics["genuine_vs_correctness_bootstrap"]
-        for mode in config["collection"]["feature_modes"]:
-            mode_runs = [value for key, value in comparisons.items() if key.startswith(f"{mode}/")]
-            for metric in METRICS:
-                deltas = [float(run[metric]["mean_difference"]) for run in mode_runs]
-                supported = 0
-                for run in mode_runs:
-                    lower, upper = run[metric]["ci95"]
-                    if metric in HIGHER_IS_BETTER and lower > 0:
-                        supported += 1
-                    elif metric not in HIGHER_IS_BETTER and upper < 0:
-                        supported += 1
-                lines.append(
-                    f"| {mode} | {metric} | {_number(fmean(deltas))} | "
-                    f"{supported}/{len(mode_runs)} |"
-                )
         lines.append("")
+        _append_comparison(
+            lines,
+            "Genuine exposure minus correctness-only",
+            metrics["genuine_vs_correctness_bootstrap"],
+            metrics["genuine_vs_correctness_seed_ensemble_bootstrap"],
+            list(config["collection"]["feature_modes"]),
+        )
+        _append_comparison(
+            lines,
+            "Genuine exposure minus shuffled exposure",
+            metrics["genuine_vs_shuffled_bootstrap"],
+            metrics["genuine_vs_shuffled_seed_ensemble_bootstrap"],
+            list(config["collection"]["feature_modes"]),
+        )
 
     target = root / "results" / "analysis_summary.md"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")

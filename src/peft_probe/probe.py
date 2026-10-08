@@ -15,6 +15,7 @@ from .collect import load_feature_shards
 from .config import config_fingerprint, output_dir
 from .io_utils import atomic_json, atomic_jsonl, atomic_torch_save, ensure_manifest, mark_complete, seed_everything
 from .metrics import binary_error_metrics, risk_coverage
+from .versioning import artifact_metadata
 
 
 class Probe(nn.Module):
@@ -127,9 +128,9 @@ def train_one(
         lr=float(settings["learning_rate"]),
         weight_decay=float(settings["weight_decay"]),
     )
-    positives = correctness[train_mask].sum()
-    negatives = train_mask.sum() - positives
-    correctness_loss = nn.BCEWithLogitsLoss(pos_weight=(negatives / positives.clamp_min(1)).to(device))
+    # Unweighted BCE is a proper scoring rule. Class weighting would preserve ranking but
+    # distort the sigmoid probabilities used for Brier score and calibration error.
+    correctness_loss = nn.BCEWithLogitsLoss()
     exposure_loss = nn.BCEWithLogitsLoss()
     lambda_exposure = 0.0 if variant == "correctness" else float(settings["lambda_exposure"])
 
@@ -218,6 +219,7 @@ def train_one(
             "feature_mode": feature_mode,
             "variant": variant,
             "seed": seed,
+            **artifact_metadata(),
         },
     )
     atomic_jsonl(target / "training_history.jsonl", history)
