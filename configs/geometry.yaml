@@ -1,0 +1,18 @@
+geometry_schema_version: 1
+
+# Negative indices follow Hugging Face hidden_states indexing. For Llama-2-7B,
+# these sample transformer outputs at roughly quarter-depth intervals while
+# avoiding the adapter-invariant embedding state.
+# Five float16 layers require roughly 1 GB for the current full benchmark run.
+layers: [-1, -9, -17, -25, -29]
+pooling: last
+batch_size: 4
+shard_size: 100
+
+# The memory subspace is fitted only on the synthetic detector-training split.
+max_components: 16
+variance_threshold: 0.90
+control_repeats: 20
+subspace_control_repeats: 3
+bootstrap_samples: 1000
+seed: 31415

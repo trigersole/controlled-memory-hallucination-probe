@@ -163,3 +163,32 @@ Qwen reimplementation as “official HaloScope.” The benchmark shards retain b
 labels, and generations needed to add a validated Qwen port. For a faithful reproduction, run the
 [official HaloScope repository](https://github.com/deeplearning-wisc/haloscope) with its supported
 model and dataset setup and report it in a separate comparison block.
+
+## Prompt-only hidden-space geometry
+
+After a completed controlled-memory run, the optional geometry pipeline maps the representation
+space without changing the adapters, probe outputs, or existing result report. It collects
+prompt-only activations at multiple layers, forms same-fact paired deltas
+`h_exposed - h_withheld`, and fits the memory subspace only on the synthetic training split.
+
+The analysis reports subspace dimensionality, held-out and relation stability, k-nearest-neighbor,
+nearest-centroid and Mahalanobis separation, linear CKA, RBF MMD, principal-angle overlap with
+benchmark correctness directions, and benchmark error ranking along both the oriented memory
+direction and full-subspace energy. Shuffled exposure labels, shuffled pairs, and matched random
+directions/subspaces are included as controls.
+
+Submit it only after the normal or corrected probe pipeline has completed:
+
+```bash
+sbatch slurm/geometry_pipeline.sbatch configs/pilot_llama2.yaml configs/geometry.yaml
+```
+
+It remains compatible with a one-submitted-job QOS. Atomic feature shards and the SLURM state file
+make it safe to requeue or resubmit. Results are isolated under:
+
+```text
+outputs/<experiment>/geometry/multilayer_v1/results/
+├── geometry_metrics.json
+├── geometry_summary.md
+└── memory_subspaces.pt
+```

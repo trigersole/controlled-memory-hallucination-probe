@@ -10,6 +10,12 @@ import torch
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
 from .collect import collect
 from .config import initialize_output, load_config, output_dir
+from .geometry import (
+    analyze_geometry,
+    collect_benchmark_geometry,
+    collect_synthetic_geometry,
+    load_geometry_config,
+)
 from .probe import train_all, train_one
 from .synthetic import generate
 from .summarize import summarize_results
@@ -20,6 +26,11 @@ from .versioning import artifact_metadata
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Controlled-memory PEFT probe experiment")
     parser.add_argument("--config", default="configs/pilot.yaml", help="YAML experiment configuration")
+    parser.add_argument(
+        "--geometry-config",
+        default="configs/geometry.yaml",
+        help="Separate hidden-space geometry settings",
+    )
     parser.add_argument("--force", action="store_true", help="Recompute completed outputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -47,6 +58,19 @@ def _parser() -> argparse.ArgumentParser:
     evaluation = subparsers.add_parser("evaluate", help="Evaluate every trained probe on a benchmark")
     evaluation.add_argument("--benchmark", choices=("trivia_qa", "truthful_qa"), required=True)
     subparsers.add_parser("summarize", help="Write a compact Markdown analysis of completed results")
+    geometry_synthetic = subparsers.add_parser(
+        "collect-geometry-synthetic", help="Collect prompt-only multi-layer adapter features"
+    )
+    geometry_synthetic.add_argument("--source", choices=("adapter_a", "adapter_b"), required=True)
+    geometry_benchmark = subparsers.add_parser(
+        "collect-geometry-benchmark", help="Collect prompt-only multi-layer benchmark features"
+    )
+    geometry_benchmark.add_argument(
+        "--benchmark", choices=("trivia_qa", "truthful_qa"), required=True
+    )
+    subparsers.add_parser(
+        "analyze-geometry", help="Fit memory subspaces and evaluate geometric transfer"
+    )
     return parser
 
 
@@ -93,6 +117,15 @@ def main() -> None:
         print(evaluate_benchmark(config, args.benchmark, force=args.force))
     elif args.command == "summarize":
         print(summarize_results(config))
+    elif args.command == "collect-geometry-synthetic":
+        settings = load_geometry_config(args.geometry_config)
+        print(collect_synthetic_geometry(config, settings, args.source, force=args.force))
+    elif args.command == "collect-geometry-benchmark":
+        settings = load_geometry_config(args.geometry_config)
+        print(collect_benchmark_geometry(config, settings, args.benchmark, force=args.force))
+    elif args.command == "analyze-geometry":
+        settings = load_geometry_config(args.geometry_config)
+        print(analyze_geometry(config, settings, force=args.force))
 
 
 if __name__ == "__main__":
