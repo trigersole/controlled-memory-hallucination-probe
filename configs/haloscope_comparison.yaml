@@ -1,0 +1,14 @@
+comparison_schema_version: 1
+
+# Use the same layers as the controlled-memory geometry run.
+layers: [-1, -9, -17, -25, -29]
+batch_size: 4
+shard_size: 100
+
+# HaloScope-style PCA candidates. Layer, rank, and projection sign are selected
+# on validation only; the test partition remains untouched.
+k_values: [1, 2, 4, 8, 10, 16]
+wild_fraction: 0.50
+validation_fraction: 0.25
+bootstrap_samples: 1000
+seed: 27182

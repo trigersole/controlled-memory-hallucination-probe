@@ -192,3 +192,40 @@ outputs/<experiment>/geometry/multilayer_v1/results/
 ├── geometry_summary.md
 └── memory_subspaces.pt
 ```
+
+## Matched HaloScope-style comparison
+
+The optional matched comparison does **not** claim to be an official HaloScope reproduction.
+Instead, it implements HaloScope-style centered, singular-value-weighted PCA direct projection and
+compares it with the controlled-memory direction under matched conditions. Both methods use the
+same Llama model, saved generations, grading labels, layers, stratified wild/validation/test split,
+and validation-only layer/rank selection.
+
+Two tracks are reported:
+
+- prompt-only representations for both methods;
+- answer-conditioned representations obtained by replaying the exact saved answer text, without
+  generating a new answer. The controlled synthetic comparison replays the same base-model answer
+  through both adapters so answer wording cannot identify exposure.
+
+Run this only after the geometry pipeline has completed:
+
+```bash
+sbatch slurm/haloscope_comparison.sbatch \
+  configs/pilot_llama2.yaml \
+  configs/geometry.yaml \
+  configs/haloscope_comparison.yaml
+```
+
+Collection is atomically sharded, the analysis caches its answer-conditioned memory subspaces and
+each completed benchmark, and one self-requeuing job remains compatible with a one-job QOS. The
+primary report is written to:
+
+```text
+outputs/<experiment>/comparisons/haloscope_matched_v1/results/matched_summary.md
+```
+
+Official HaloScope should still be reported separately using its authors' repository. In
+particular, their full method trains a classifier from PCA-derived pseudo-memberships; the matched
+comparison here deliberately reports the direct-projection component so that data access and test
+inputs remain explicit.

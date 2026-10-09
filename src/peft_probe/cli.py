@@ -9,6 +9,12 @@ import torch
 
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
 from .collect import collect
+from .comparison import (
+    analyze_matched_comparison,
+    collect_comparison_benchmark,
+    collect_comparison_synthetic,
+    load_comparison_config,
+)
 from .config import initialize_output, load_config, output_dir
 from .geometry import (
     analyze_geometry,
@@ -30,6 +36,11 @@ def _parser() -> argparse.ArgumentParser:
         "--geometry-config",
         default="configs/geometry.yaml",
         help="Separate hidden-space geometry settings",
+    )
+    parser.add_argument(
+        "--comparison-config",
+        default="configs/haloscope_comparison.yaml",
+        help="Matched HaloScope-style comparison settings",
     )
     parser.add_argument("--force", action="store_true", help="Recompute completed outputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -70,6 +81,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser(
         "analyze-geometry", help="Fit memory subspaces and evaluate geometric transfer"
+    )
+    comparison_synthetic = subparsers.add_parser(
+        "collect-comparison-synthetic",
+        help="Collect answer-conditioned paired adapter features",
+    )
+    comparison_synthetic.add_argument(
+        "--source", choices=("adapter_a", "adapter_b"), required=True
+    )
+    comparison_benchmark = subparsers.add_parser(
+        "collect-comparison-benchmark",
+        help="Replay saved benchmark answers for matched multi-layer features",
+    )
+    comparison_benchmark.add_argument(
+        "--benchmark", choices=("trivia_qa", "truthful_qa"), required=True
+    )
+    subparsers.add_parser(
+        "analyze-comparison",
+        help="Evaluate controlled memory against matched HaloScope-style projection",
     )
     return parser
 
@@ -126,6 +155,41 @@ def main() -> None:
     elif args.command == "analyze-geometry":
         settings = load_geometry_config(args.geometry_config)
         print(analyze_geometry(config, settings, force=args.force))
+    elif args.command == "collect-comparison-synthetic":
+        geometry_settings = load_geometry_config(args.geometry_config)
+        comparison_settings = load_comparison_config(args.comparison_config)
+        print(
+            collect_comparison_synthetic(
+                config,
+                geometry_settings,
+                comparison_settings,
+                args.source,
+                force=args.force,
+            )
+        )
+    elif args.command == "collect-comparison-benchmark":
+        geometry_settings = load_geometry_config(args.geometry_config)
+        comparison_settings = load_comparison_config(args.comparison_config)
+        print(
+            collect_comparison_benchmark(
+                config,
+                geometry_settings,
+                comparison_settings,
+                args.benchmark,
+                force=args.force,
+            )
+        )
+    elif args.command == "analyze-comparison":
+        geometry_settings = load_geometry_config(args.geometry_config)
+        comparison_settings = load_comparison_config(args.comparison_config)
+        print(
+            analyze_matched_comparison(
+                config,
+                geometry_settings,
+                comparison_settings,
+                force=args.force,
+            )
+        )
 
 
 if __name__ == "__main__":
