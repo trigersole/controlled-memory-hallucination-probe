@@ -189,6 +189,37 @@ excluded and grading coverage is reported. A publication-quality generation expe
 a prespecified human or validated judge protocol rather than silently treating unmatched text as
 false.
 
+## Controlled-memory cosine and subspace analysis
+
+The memory-subspace stage tests whether TriviaQA errors align with the geometry created by the
+controlled LoRA intervention. It deliberately excludes TruthfulQA. It reuses the completed
+multi-layer prompt and same-answer replay features, so it does not run the LLM again.
+
+For prompt-last, answer-last, and `answer_last - prompt_last` trajectories, it:
+
+1. centers and L2-normalizes hidden states using synthetic training examples;
+2. fits exposed-minus-withheld SVD subspaces on synthetic training entities only;
+3. selects layers and ranks using synthetic validation exposure separation only;
+4. evaluates cosine direction, signed subspace-centroid margin, and subspace energy on TriviaQA;
+5. reports shuffled-label/pair and matched random direction/subspace controls;
+6. compares against token entropy and the answer-last correctness probe with paired bootstraps.
+
+TriviaQA labels never enter fitting or model selection. The same question and exact same replayed
+answer are passed through both synthetic adapters, preventing answer wording from identifying
+exposure. Run after the earlier geometry and same-answer comparison artifacts exist:
+
+```bash
+sbatch slurm/memory_subspace.sbatch \
+  configs/pilot_llama2_last_tokens.yaml \
+  configs/memory_subspace.yaml
+```
+
+The job is requeue-safe and checkpoints each completed representation. Its report is written to:
+
+```text
+outputs/llama2_7b_memory_probe_last_tokens/memory_subspace/answer_trajectory_v1/summary.md
+```
+
 ## HaloScope baseline
 
 HaloScope should be reported as an external baseline, not as one of the three matched probes. Its

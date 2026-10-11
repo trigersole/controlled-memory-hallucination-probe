@@ -1,0 +1,16 @@
+memory_subspace_schema_version: 1
+
+# These must be present in the completed prompt-geometry and same-answer replay runs.
+layers: [-1, -9, -17, -25, -29]
+representations: [prompt_last, answer_last, trajectory]
+rank_candidates: [1, 2, 4, 8, 16]
+
+# Selection uses synthetic validation entities only. TriviaQA labels are evaluation-only.
+benchmark: trivia_qa
+control_repeats: 20
+subspace_control_repeats: 3
+bootstrap_samples: 1000
+seed: 16180
+
+# Optional existing probe baseline. Five seed predictions are averaged when available.
+probe_baseline: on_policy__answer_last/correctness

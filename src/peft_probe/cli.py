@@ -22,6 +22,7 @@ from .geometry import (
     collect_synthetic_geometry,
     load_geometry_config,
 )
+from .memory_subspace import analyze_memory_subspace, load_memory_subspace_config
 from .probe import train_all, train_one
 from .synthetic import generate
 from .summarize import summarize_results
@@ -41,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
         "--comparison-config",
         default="configs/haloscope_comparison.yaml",
         help="Matched HaloScope-style comparison settings",
+    )
+    parser.add_argument(
+        "--memory-subspace-config",
+        default="configs/memory_subspace.yaml",
+        help="Controlled-memory cosine/subspace analysis settings",
     )
     parser.add_argument("--force", action="store_true", help="Recompute completed outputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -103,6 +109,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-comparison",
         help="Evaluate controlled memory against matched HaloScope-style projection",
+    )
+    subparsers.add_parser(
+        "analyze-memory-subspace",
+        help="Evaluate cosine, subspace, and answer-trajectory memory scores",
     )
     return parser
 
@@ -198,6 +208,9 @@ def main() -> None:
                 force=args.force,
             )
         )
+    elif args.command == "analyze-memory-subspace":
+        settings = load_memory_subspace_config(args.memory_subspace_config)
+        print(analyze_memory_subspace(config, settings, force=args.force))
 
 
 if __name__ == "__main__":
