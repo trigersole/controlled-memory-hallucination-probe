@@ -9,7 +9,7 @@ from typing import Any
 import torch
 from peft import PeftModel
 
-from .config import config_fingerprint, output_dir
+from .config import config_fingerprint, output_dir, validate_source_run
 from .io_utils import atomic_torch_save, chunks, ensure_manifest, mark_complete, read_jsonl, seed_everything
 from .modeling import load_base_model, load_tokenizer, model_device, user_prompt
 
@@ -49,11 +49,50 @@ def _pool_hidden(hidden: torch.Tensor, token_mask: torch.Tensor, pooling: str) -
     raise ValueError(f"Unknown pooling method: {pooling}")
 
 
+def feature_keys(settings: dict[str, Any]) -> list[str]:
+    """Return the stored feature names requested by a collection configuration."""
+    modes = list(settings["feature_modes"])
+    positions = settings.get("feature_positions")
+    if positions is None:
+        return modes
+    allowed = {"prompt_last", "answer_last"}
+    unknown = set(positions) - allowed
+    if unknown:
+        raise ValueError(
+            f"Unknown collection.feature_positions {sorted(unknown)}; "
+            f"choose from {sorted(allowed)}"
+        )
+    if not positions:
+        raise ValueError("collection.feature_positions cannot be empty")
+    return [f"{mode}__{position}" for mode in modes for position in positions]
+
+
+def configured_feature_keys(config: dict[str, Any]) -> list[str]:
+    return feature_keys(config["collection"])
+
+
 def _replay_attention_mask(
     prompt_attention: torch.Tensor, answer_mask: torch.Tensor
 ) -> torch.Tensor:
     """Preserve the tokenizer's prompt mask when PAD and EOS share an id."""
     return torch.cat([prompt_attention.bool(), answer_mask.bool()], dim=1)
+
+
+def _token_position_masks(
+    prompt_attention: torch.Tensor, answer_mask: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    """Build masks for the last prompt and last non-EOS generated answer tokens."""
+    prompt_mask = torch.cat(
+        [prompt_attention.bool(), torch.zeros_like(answer_mask, dtype=torch.bool)], dim=1
+    )
+    answer_full = torch.cat(
+        [torch.zeros_like(prompt_attention, dtype=torch.bool), answer_mask.bool()], dim=1
+    )
+    # An immediate EOS contains no answer representation. Fall back to the prompt boundary
+    # instead of silently selecting padding position zero.
+    empty_answer = ~answer_full.any(dim=1)
+    answer_full[empty_answer] = prompt_mask[empty_answer]
+    return {"prompt_last": prompt_mask, "answer_last": answer_full}
 
 
 def _adapter_context(model, disabled: bool):
@@ -110,26 +149,36 @@ def _batch_generate_and_extract(
     content_mask = torch.zeros_like(full_attention)
     content_mask[:, input_width:] = answer_mask
     feature_tensors: dict[str, torch.Tensor] = {}
-    feature_cache: dict[str, torch.Tensor] = {}
+    hidden_cache: dict[str, torch.Tensor] = {}
     layer = int(settings["layer"])
     for mode in settings["feature_modes"]:
         cache_key = "base" if source == "base" else mode
-        if cache_key in feature_cache:
-            feature_tensors[mode] = feature_cache[cache_key]
+        if cache_key in hidden_cache:
+            hidden = hidden_cache[cache_key]
+        else:
+            disable = mode == "base_replay" and source != "base"
+            with _adapter_context(model, disable):
+                outputs = model(
+                    input_ids=sequences,
+                    attention_mask=full_attention,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+            hidden = outputs.hidden_states[layer]
+            hidden_cache[cache_key] = hidden
+        positions = settings.get("feature_positions")
+        if positions is None:
+            pooled = _pool_hidden(hidden, content_mask, settings["pooling"])
+            feature_tensors[mode] = pooled.detach().float().cpu()
             continue
-        disable = mode == "base_replay" and source != "base"
-        with _adapter_context(model, disable):
-            outputs = model(
-                input_ids=sequences,
-                attention_mask=full_attention,
-                output_hidden_states=True,
-                use_cache=False,
-                return_dict=True,
-            )
-        hidden = outputs.hidden_states[layer]
-        pooled = _pool_hidden(hidden, content_mask, settings["pooling"])
-        feature_tensors[mode] = pooled.detach().float().cpu()
-        feature_cache[cache_key] = feature_tensors[mode]
+
+        position_masks = _token_position_masks(tokens["attention_mask"], answer_mask)
+        # The hidden-state forward pass is shared; only inexpensive indexing differs.
+        for position in positions:
+            key = f"{mode}__{position}"
+            pooled = _pool_hidden(hidden, position_masks[position], "last")
+            feature_tensors[key] = pooled.detach().float().cpu()
 
     records: list[dict[str, Any]] = []
     for index, (row, answer) in enumerate(zip(rows, answers, strict=True)):
@@ -165,6 +214,7 @@ def collect(config: dict[str, Any], source: str, force: bool = False) -> Path:
     if source not in set(config["collection"]["sources"]):
         raise ValueError(f"Unknown source {source}; choose from {config['collection']['sources']}")
     root = output_dir(config)
+    source_root = validate_source_run(config)
     target = root / "features" / "synthetic" / source
     ensure_manifest(target, config_fingerprint(config), force=force)
     done = target / "_SUCCESS.json"
@@ -175,13 +225,15 @@ def collect(config: dict[str, Any], source: str, force: bool = False) -> Path:
     tokenizer = load_tokenizer(config["model"])
     model = load_base_model(config["model"], training=False)
     if source.startswith("adapter_"):
-        adapter_path = root / "adapters" / source / "final"
+        adapter_path = source_root / "adapters" / source / "final"
         if not (adapter_path / "_SUCCESS.json").exists():
             raise FileNotFoundError(f"Adapter is incomplete: {adapter_path}")
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
     model.eval()
 
-    rows = sorted(read_jsonl(root / "data" / "facts.jsonl"), key=lambda row: row["fact_id"])
+    rows = sorted(
+        read_jsonl(source_root / "data" / "facts.jsonl"), key=lambda row: row["fact_id"]
+    )
     shard_size = int(config["collection"]["shard_size"])
     batch_size = int(config["collection"]["batch_size"])
     expected_shards = math.ceil(len(rows) / shard_size)
@@ -191,7 +243,7 @@ def collect(config: dict[str, Any], source: str, force: bool = False) -> Path:
             continue
         all_records: list[dict[str, Any]] = []
         feature_parts: dict[str, list[torch.Tensor]] = {
-            mode: [] for mode in config["collection"]["feature_modes"]
+            key: [] for key in configured_feature_keys(config)
         }
         for _, batch_rows in chunks(shard_rows, batch_size):
             records, features = _batch_generate_and_extract(

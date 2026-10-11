@@ -8,14 +8,14 @@ import sys
 import torch
 
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
-from .collect import collect
+from .collect import collect, configured_feature_keys
 from .comparison import (
     analyze_matched_comparison,
     collect_comparison_benchmark,
     collect_comparison_synthetic,
     load_comparison_config,
 )
-from .config import initialize_output, load_config, output_dir
+from .config import initialize_output, load_config, output_dir, validate_source_run
 from .geometry import (
     analyze_geometry,
     collect_benchmark_geometry,
@@ -57,7 +57,11 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("intervention-report", help="Measure exposed versus withheld accuracy")
 
     probe = subparsers.add_parser("train-probe", help="Train or resume one probe")
-    probe.add_argument("--feature-mode", choices=("base_replay", "on_policy"), required=True)
+    probe.add_argument(
+        "--feature-mode",
+        required=True,
+        help="Configured feature key, e.g. base_replay__prompt_last",
+    )
     probe.add_argument(
         "--variant", choices=("correctness", "shuffled_exposure", "genuine_exposure"), required=True
     )
@@ -108,6 +112,8 @@ def _validate(config: dict) -> None:
     missing = [key for key in required if key not in config]
     if missing:
         raise ValueError(f"Missing configuration sections: {missing}")
+    feature_names = configured_feature_keys(config)
+    source_root = validate_source_run(config)
     information = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
@@ -116,6 +122,8 @@ def _validate(config: dict) -> None:
         "cuda_device_count": torch.cuda.device_count(),
         "model": config["model"]["name_or_path"],
         "output_dir": str(output_dir(config)),
+        "source_output_dir": str(source_root),
+        "feature_keys": feature_names,
         **artifact_metadata(),
     }
     print(json.dumps(information, indent=2))

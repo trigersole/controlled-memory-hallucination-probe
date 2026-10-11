@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .collect import load_feature_shards
+from .collect import configured_feature_keys, load_feature_shards
 from .config import config_fingerprint, output_dir
 from .io_utils import atomic_json, atomic_jsonl, atomic_torch_save, ensure_manifest, mark_complete, seed_everything
 from .metrics import binary_error_metrics, risk_coverage
@@ -265,7 +265,7 @@ def train_one(
 
 def train_all(config: dict[str, Any], force: bool = False) -> list[Path]:
     outputs: list[Path] = []
-    for feature_mode in config["collection"]["feature_modes"]:
+    for feature_mode in configured_feature_keys(config):
         for variant in config["probe"]["variants"]:
             for seed in config["probe"]["seeds"]:
                 outputs.append(train_one(config, feature_mode, variant, int(seed), force=force))

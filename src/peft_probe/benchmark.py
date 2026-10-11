@@ -9,7 +9,12 @@ import numpy as np
 import torch
 from datasets import load_dataset
 
-from .collect import _batch_generate_and_extract, load_feature_shards, normalize
+from .collect import (
+    _batch_generate_and_extract,
+    configured_feature_keys,
+    load_feature_shards,
+    normalize,
+)
 from .config import config_fingerprint, output_dir
 from .io_utils import atomic_json, atomic_jsonl, atomic_torch_save, chunks, ensure_manifest, mark_complete
 from .metrics import (
@@ -172,7 +177,7 @@ def collect_benchmark(config: dict[str, Any], name: str, force: bool = False) ->
             continue
         records: list[dict[str, Any]] = []
         feature_parts: dict[str, list[torch.Tensor]] = {
-            mode: [] for mode in collection_settings["feature_modes"]
+            key: [] for key in configured_feature_keys(config)
         }
         for _, batch_rows in chunks(shard_rows, batch_size):
             batch_records, batch_features = _batch_generate_and_extract(
@@ -243,7 +248,7 @@ def _comparison_bundle(
     seeds = [int(seed) for seed in config["probe"]["seeds"]]
     samples = int(config["benchmarks"]["bootstrap_samples"])
     experiment_seed = int(config["experiment"]["seed"])
-    for mode_index, mode in enumerate(config["collection"]["feature_modes"]):
+    for mode_index, mode in enumerate(configured_feature_keys(config)):
         proposed_runs = []
         baseline_runs = []
         for seed in seeds:
@@ -275,7 +280,7 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
 
     records_by_mode: dict[str, list[dict[str, Any]]] = {}
     features_by_mode: dict[str, torch.Tensor] = {}
-    for mode in config["collection"]["feature_modes"]:
+    for mode in configured_feature_keys(config):
         records, features = load_feature_shards(root / "features" / "benchmarks" / name, mode)
         records_by_mode[mode] = records
         features_by_mode[mode] = features
@@ -286,7 +291,7 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
         "baselines": {},
         **artifact_metadata(),
     }
-    default_records = records_by_mode[config["collection"]["feature_modes"][0]]
+    default_records = records_by_mode[configured_feature_keys(config)[0]]
     scored_mask = np.asarray([record["correct"] >= 0 for record in default_records])
     labels = np.asarray([max(0, record["correct"]) for record in default_records], dtype=int)[scored_mask]
     summary["num_total"] = len(default_records)
@@ -336,7 +341,7 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
         for record in default_records
     }
     probabilities: dict[tuple[str, str, int], np.ndarray] = {}
-    for mode in config["collection"]["feature_modes"]:
+    for mode in configured_feature_keys(config):
         for variant in config["probe"]["variants"]:
             for seed in config["probe"]["seeds"]:
                 model_path = root / "probes" / mode / variant / f"seed_{seed}" / "model.pt"
@@ -380,7 +385,7 @@ def evaluate_benchmark(config: dict[str, Any], name: str, force: bool = False) -
         "seed_ensemble"
     ]
     seed_aggregate: dict[str, Any] = {}
-    for mode in config["collection"]["feature_modes"]:
+    for mode in configured_feature_keys(config):
         for variant in config["probe"]["variants"]:
             prefix = f"{mode}/{variant}/seed_"
             runs = [metrics for label, metrics in summary["models"].items() if label.startswith(prefix)]
@@ -405,7 +410,7 @@ def intervention_report(config: dict[str, Any]) -> Path:
     for source in ("adapter_a", "adapter_b"):
         records, _ = load_feature_shards(
             root / "features" / "synthetic" / source,
-            config["collection"]["feature_modes"][0],
+            configured_feature_keys(config)[0],
         )
         rows.extend(record for record in records if record["split"] != "ood")
     exposed = np.asarray([record["correct"] for record in rows if record["exposure"] == 1])

@@ -12,7 +12,7 @@ import yaml
 from peft import PeftModel
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from .collect import load_feature_shards
+from .collect import configured_feature_keys, load_feature_shards
 from .config import config_fingerprint, output_dir
 from .io_utils import (
     atomic_json,
@@ -235,7 +235,7 @@ def collect_benchmark_geometry(
     root = output_dir(config)
     old_records, _ = load_feature_shards(
         root / "features" / "benchmarks" / benchmark,
-        config["collection"]["feature_modes"][0],
+        configured_feature_keys(config)[0],
     )
     rows = []
     for record in old_records:

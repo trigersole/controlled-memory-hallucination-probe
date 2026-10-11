@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from .collect import configured_feature_keys
 from .config import output_dir
 
 
@@ -144,14 +145,14 @@ def summarize_results(config: dict[str, Any]) -> Path:
             "Genuine exposure minus correctness-only",
             metrics["genuine_vs_correctness_bootstrap"],
             metrics["genuine_vs_correctness_seed_ensemble_bootstrap"],
-            list(config["collection"]["feature_modes"]),
+            configured_feature_keys(config),
         )
         _append_comparison(
             lines,
             "Genuine exposure minus shuffled exposure",
             metrics["genuine_vs_shuffled_bootstrap"],
             metrics["genuine_vs_shuffled_seed_ensemble_bootstrap"],
-            list(config["collection"]["feature_modes"]),
+            configured_feature_keys(config),
         )
 
     target = root / "results" / "analysis_summary.md"

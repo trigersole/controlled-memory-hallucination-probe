@@ -11,7 +11,7 @@ import torch
 import yaml
 from peft import PeftModel
 
-from .collect import load_feature_shards
+from .collect import configured_feature_keys, load_feature_shards
 from .config import config_fingerprint, output_dir
 from .geometry import (
     _fit_subspace,
@@ -194,7 +194,7 @@ def _synthetic_common_answer_rows(config: dict[str, Any]) -> list[dict[str, Any]
     root = output_dir(config)
     records, _ = load_feature_shards(
         root / "features" / "synthetic" / "base",
-        config["collection"]["feature_modes"][0],
+        configured_feature_keys(config)[0],
     )
     rows = []
     for record in records:

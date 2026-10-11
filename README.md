@@ -76,6 +76,41 @@ sbatch slurm/rerun_corrected_analysis.sbatch configs/pilot_llama2.yaml
 Use this only for a completed pre-schema-v3 run. Subsequent schema-v3 runs should use the normal
 submission script.
 
+### Compare final prompt and final answer tokens
+
+To test whether mean pooling hides useful information, make a derived configuration from the
+completed run. Keep the same `model`, `data`, and `lora` sections, then change/add:
+
+```yaml
+experiment:
+  name: llama2_7b_memory_probe_last_tokens
+  output_dir: outputs/llama2_7b_memory_probe_last_tokens
+  source_output_dir: outputs/llama2_7b_memory_probe
+
+collection:
+  feature_modes: [base_replay, on_policy]
+  feature_positions: [prompt_last, answer_last]
+```
+
+`prompt_last` is the final non-padding token of the complete formatted prompt. `answer_last` is
+the final generated answer token after excluding padding and EOS (the `-2` token when EOS is
+last). The two positions are indexed from the same hidden-state forward pass and receive separate
+probes. An empty answer falls back to the prompt boundary and remains identifiable through its
+saved `answer_tokens: 0` field.
+
+The source run supplies the immutable facts and completed LoRA adapters. All new features,
+checkpoints, probes, and results go to the new output directory. The code verifies that the
+source and derived configurations have identical model, data, and LoRA settings.
+
+Run the derived experiment as one resumable SLURM job:
+
+```bash
+bash slurm/submit_token_position_pipeline.sh configs/pilot_llama2_last_tokens.yaml
+```
+
+Result rows are named `base_replay__prompt_last`, `base_replay__answer_last`,
+`on_policy__prompt_last`, and `on_policy__answer_last`. The original mean-pooled run is preserved.
+
 ### Preemption and wall-time recovery
 
 - LoRA checkpoints are under `outputs/<run>/adapters/adapter_*/checkpoints/`.

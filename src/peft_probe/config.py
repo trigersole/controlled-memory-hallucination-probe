@@ -24,6 +24,35 @@ def output_dir(config: dict[str, Any]) -> Path:
     return Path(config["experiment"]["output_dir"]).resolve()
 
 
+def source_output_dir(config: dict[str, Any]) -> Path:
+    """Return an optional completed run supplying facts and trained adapters."""
+    source = config["experiment"].get("source_output_dir")
+    return Path(source).resolve() if source else output_dir(config)
+
+
+def validate_source_run(config: dict[str, Any]) -> Path:
+    """Ensure reused facts/adapters were built with the same scientific settings."""
+    source = source_output_dir(config)
+    if source == output_dir(config):
+        return source
+    run_file = source / "_RUN.json"
+    if not run_file.is_file():
+        raise FileNotFoundError(f"Missing source run metadata: {run_file}")
+    with run_file.open("r", encoding="utf-8") as handle:
+        previous = json.load(handle).get("config", {})
+    mismatches = [
+        section
+        for section in ("model", "data", "lora")
+        if previous.get(section) != config.get(section)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "source_output_dir is incompatible with the current configuration in sections: "
+            + ", ".join(mismatches)
+        )
+    return source
+
+
 def config_fingerprint(config: dict[str, Any]) -> str:
     clean = {key: value for key, value in config.items() if not key.startswith("_")}
     payload = json.dumps(clean, sort_keys=True, separators=(",", ":")).encode()
