@@ -210,6 +210,31 @@ extraction, so its transfer gap mainly captures adapter-induced answer/content s
 also retains the active adapter in the representation and can therefore reveal an additional
 adapter-representation shift.
 
+## Adapter-invariant correctness pattern
+
+The adapter-invariant analysis searches for a correct-versus-hallucinated direction that has the
+same orientation in A and B. It estimates adapter nuisance directions within correctness/relation
+groups, projects those directions out, constructs the normalized common component of the separate
+A and B correctness directions, and selects nuisance rank using synthetic validation only under an
+adapter-identity leakage constraint.
+
+It reports per-adapter synthetic test performance, adapter-identity AUROC, strict
+leave-one-relation-out performance, and frozen TriviaQA/TruthfulQA transfer. It reuses existing
+feature shards—including the multi-layer same-answer A/B replays—and does not run the language
+model again:
+
+```bash
+sbatch slurm/adapter_invariant.sbatch \
+  configs/pilot_llama2_last_tokens.yaml \
+  configs/adapter_invariant.yaml
+```
+
+Results are written to
+`outputs/<run>/adapter_invariant/v1/{metrics.json,patterns.pt,summary.md}`. A transferable pattern
+should have positive A/B direction cosine, strong correctness AUROC within both adapters, adapter
+identity AUROC near 0.5, and stable held-out-relation performance before natural benchmarks are
+interpreted.
+
 TruthfulQA MC1 is the default because it gives deterministic labels. Generation mode is available,
 but reference matching cannot reliably grade paraphrases; ambiguous generations are deliberately
 excluded and grading coverage is reported. A publication-quality generation experiment should add

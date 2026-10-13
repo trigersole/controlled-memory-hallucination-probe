@@ -1,0 +1,16 @@
+adapter_invariant_schema_version: 1
+
+# Existing matched-comparison shards replay the exact same base-model answer through A and B.
+# This removes answer wording as an explanation and permits a multi-layer search without inference.
+same_answer_layers: [-1, -9, -17, -25, -29]
+
+# The nuisance subspace captures A-versus-B differences within matched correctness/relation
+# groups. Rank is selected using synthetic validation only.
+nuisance_rank_candidates: [0, 1, 2, 4]
+max_adapter_identity_auroc: 0.55
+minimum_direction_cosine: 0.0
+minimum_worst_adapter_auroc: 0.55
+minimum_group_examples: 10
+
+bootstrap_samples: 1000
+seed: 42424
