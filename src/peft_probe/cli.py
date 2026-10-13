@@ -7,6 +7,7 @@ import sys
 
 import torch
 
+from .adapter_transfer import evaluate_adapter_transfer
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
 from .collect import collect, configured_feature_keys
 from .comparison import (
@@ -73,6 +74,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     probe.add_argument("--seed", type=int, required=True)
     subparsers.add_parser("train-probes", help="Train every configured feature/variant/seed probe")
+    subparsers.add_parser(
+        "adapter-transfer",
+        help="Train on each adapter separately and test transfer to the other adapter",
+    )
 
     benchmark = subparsers.add_parser("collect-benchmark", help="Generate and featurize a benchmark")
     benchmark.add_argument("--benchmark", choices=("trivia_qa", "truthful_qa"), required=True)
@@ -158,6 +163,8 @@ def main() -> None:
     elif args.command == "train-probes":
         for path in train_all(config, force=args.force):
             print(path)
+    elif args.command == "adapter-transfer":
+        print(evaluate_adapter_transfer(config, force=args.force))
     elif args.command == "collect-benchmark":
         print(collect_benchmark(config, args.benchmark, force=args.force))
     elif args.command == "evaluate":

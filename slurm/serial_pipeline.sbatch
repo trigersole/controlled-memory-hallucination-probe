@@ -18,7 +18,7 @@ PYTHON_BIN=${HALOSCOPE_PYTHON:-${PYTHON_BIN:-$HALOSCOPE_DIR/.venv/bin/python}}
 PEFT_OVERLAY=${PEFT_OVERLAY:-${SCRATCH:-$HOME}/peft-probe-overlay}
 CONFIG_NAME=$(basename "$CONFIG")
 RUN_NAME=${CONFIG_NAME%.*}
-TOTAL_STEPS=12
+TOTAL_STEPS=13
 
 cd "${SLURM_SUBMIT_DIR}"
 export PYTHONPATH="${SLURM_SUBMIT_DIR}/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
@@ -72,8 +72,9 @@ while (( STEP < TOTAL_STEPS )); do
     7)  LABEL="collect-benchmark-truthful-qa"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" collect-benchmark --benchmark truthful_qa) ;;
     8)  LABEL="intervention-report"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" intervention-report) ;;
     9)  LABEL="train-probes"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" train-probes) ;;
-    10) LABEL="evaluate-trivia-qa"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" evaluate --benchmark trivia_qa) ;;
-    11) LABEL="evaluate-truthful-qa"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" evaluate --benchmark truthful_qa) ;;
+    10) LABEL="adapter-transfer"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" adapter-transfer) ;;
+    11) LABEL="evaluate-trivia-qa"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" evaluate --benchmark trivia_qa) ;;
+    12) LABEL="evaluate-truthful-qa"; CMD=("$PYTHON_BIN" -m peft_probe --config "$CONFIG" evaluate --benchmark truthful_qa) ;;
   esac
 
   echo "Starting pipeline step $STEP/$((TOTAL_STEPS - 1)): $LABEL"

@@ -31,6 +31,9 @@ case "$STAGE" in
   train-probes)
     "$PYTHON_BIN" -m peft_probe --config "$CONFIG" train-probes &
     ;;
+  adapter-transfer)
+    "$PYTHON_BIN" -m peft_probe --config "$CONFIG" adapter-transfer &
+    ;;
   evaluate)
     BENCHMARKS=(trivia_qa truthful_qa)
     "$PYTHON_BIN" -m peft_probe --config "$CONFIG" evaluate --benchmark "${BENCHMARKS[$SLURM_ARRAY_TASK_ID]}" &

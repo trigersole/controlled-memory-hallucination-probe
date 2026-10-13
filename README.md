@@ -138,6 +138,7 @@ python -m peft_probe --config "$CFG" collect-synthetic --source adapter_b
 python -m peft_probe --config "$CFG" collect-synthetic --source base
 python -m peft_probe --config "$CFG" intervention-report
 python -m peft_probe --config "$CFG" train-probes
+python -m peft_probe --config "$CFG" adapter-transfer
 python -m peft_probe --config "$CFG" collect-benchmark --benchmark trivia_qa
 python -m peft_probe --config "$CFG" collect-benchmark --benchmark truthful_qa
 python -m peft_probe --config "$CFG" evaluate --benchmark trivia_qa
@@ -182,6 +183,32 @@ risk so analyses can be reproduced without rerunning the LLM.
 - Real benchmark labels are used only after probe training.
 - Results include log-probability and entropy baselines plus AUROC, AUPRC, Brier, ECE, AURC,
   risk–coverage curves, and paired bootstrap differences.
+
+## Cross-adapter transfer diagnostic
+
+The standard probe pools Adapter A, Adapter B, and base-model examples during training. To detect
+an adapter-specific failure hidden by that pooling, run:
+
+```bash
+python -m peft_probe --config configs/pilot.yaml adapter-transfer
+```
+
+This trains the configured probe variants on Adapter A only (including early stopping), evaluates
+on held-out entities from A and B, and then repeats in the B-to-A direction. Results are written to
+`outputs/<run>/adapter_transfer/{metrics.json,predictions.jsonl,summary.md}`. The report also gives
+the A/B correctness-agreement rate and metrics restricted to facts whose correctness labels agree.
+
+This experiment measures **adapter-induced representation/distribution shift**, not pure domain
+drift: both adapters contain complementary facts drawn from the same relations and generator. A
+large cross-adapter degradation on the label-agreement subset is evidence that the detector learned
+adapter-specific cues. A low A/B correctness-agreement rate instead indicates that much of the
+change comes from the adapters producing different answers or errors. Testing true domain drift
+requires a separate held-out relation, template family, or external dataset.
+
+Interpret the feature modes separately: `base_replay` disables the adapter during feature
+extraction, so its transfer gap mainly captures adapter-induced answer/content shift. `on_policy`
+also retains the active adapter in the representation and can therefore reveal an additional
+adapter-representation shift.
 
 TruthfulQA MC1 is the default because it gives deterministic labels. Generation mode is available,
 but reference matching cannot reliably grade paraphrases; ambiguous generations are deliberately
