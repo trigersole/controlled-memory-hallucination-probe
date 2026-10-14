@@ -1,0 +1,17 @@
+adapter_invariant_subspace_schema_version: 1
+
+# Reuse the existing matched A/B answer replays; no model inference is required.
+same_answer_layers: [-1, -9, -17, -25, -29]
+
+# Nuisance directions model conditional A-versus-B shifts. Correctness directions are
+# relation-conditioned and their SVD span permits rotations that a single vector cannot.
+nuisance_rank_candidates: [0, 1, 2, 4, 6]
+correctness_rank_candidates: [1, 2, 4, 6]
+
+# Both the scalar risk and the full projected subspace must satisfy this validation bound.
+max_adapter_identity_auroc: 0.55
+minimum_worst_adapter_auroc: 0.55
+minimum_group_examples: 10
+
+bootstrap_samples: 1000
+seed: 52525

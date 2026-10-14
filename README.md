@@ -235,6 +235,25 @@ should have positive A/B direction cosine, strong correctness AUROC within both 
 identity AUROC near 0.5, and stable held-out-relation performance before natural benchmarks are
 interpreted.
 
+### Rotation-invariant multidimensional correctness subspace
+
+The single-direction analysis can miss information that A and B encode with different axes or
+signs. The multidimensional follow-up spans relation-conditioned correctness directions from both
+adapters after projecting out conditional adapter nuisance. It scores examples by their squared
+distance to the nearest A/B correct and incorrect prototypes inside that subspace. This score is
+unchanged by rotations or sign flips of the fitted basis.
+
+Rank selection and both scalar-risk and full-subspace adapter-leakage constraints use synthetic
+validation only. TriviaQA and TruthfulQA labels remain final evaluation data:
+
+```bash
+sbatch slurm/adapter_invariant_subspace.sbatch \
+  configs/pilot_llama2_last_tokens.yaml
+```
+
+Results are written to
+`outputs/<run>/adapter_invariant_subspace/v1/{metrics.json,patterns.pt,summary.md}`.
+
 TruthfulQA MC1 is the default because it gives deterministic labels. Generation mode is available,
 but reference matching cannot reliably grade paraphrases; ambiguous generations are deliberately
 excluded and grading coverage is reported. A publication-quality generation experiment should add

@@ -8,6 +8,10 @@ import sys
 import torch
 
 from .adapter_invariant import analyze_adapter_invariant, load_adapter_invariant_config
+from .adapter_invariant_subspace import (
+    analyze_adapter_invariant_subspace,
+    load_adapter_invariant_subspace_config,
+)
 from .adapter_transfer import evaluate_adapter_transfer
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
 from .collect import collect, configured_feature_keys
@@ -54,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
         "--adapter-invariant-config",
         default="configs/adapter_invariant.yaml",
         help="Adapter-invariant correctness-pattern settings",
+    )
+    parser.add_argument(
+        "--adapter-invariant-subspace-config",
+        default="configs/adapter_invariant_subspace.yaml",
+        help="Adapter-invariant multidimensional correctness-subspace settings",
     )
     parser.add_argument("--force", action="store_true", help="Recompute completed outputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -128,6 +137,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-adapter-invariant",
         help="Find a correctness pattern shared by A and B after removing adapter identity",
+    )
+    subparsers.add_parser(
+        "analyze-adapter-invariant-subspace",
+        help="Find a rotation-invariant correctness subspace shared by A and B",
     )
     return parser
 
@@ -231,6 +244,11 @@ def main() -> None:
     elif args.command == "analyze-adapter-invariant":
         settings = load_adapter_invariant_config(args.adapter_invariant_config)
         print(analyze_adapter_invariant(config, settings, force=args.force))
+    elif args.command == "analyze-adapter-invariant-subspace":
+        settings = load_adapter_invariant_subspace_config(
+            args.adapter_invariant_subspace_config
+        )
+        print(analyze_adapter_invariant_subspace(config, settings, force=args.force))
 
 
 if __name__ == "__main__":
