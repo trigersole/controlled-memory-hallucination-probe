@@ -12,6 +12,7 @@ from peft import PeftModel
 from .config import config_fingerprint, output_dir, validate_source_run
 from .io_utils import atomic_torch_save, chunks, ensure_manifest, mark_complete, read_jsonl, seed_everything
 from .modeling import load_base_model, load_tokenizer, model_device, user_prompt
+from .prompting import synthetic_eval_question
 
 
 ABSTENTION_PATTERNS = (
@@ -234,6 +235,10 @@ def collect(config: dict[str, Any], source: str, force: bool = False) -> Path:
     rows = sorted(
         read_jsonl(source_root / "data" / "facts.jsonl"), key=lambda row: row["fact_id"]
     )
+    rows = [
+        {**row, "eval_question": synthetic_eval_question(config, row)}
+        for row in rows
+    ]
     shard_size = int(config["collection"]["shard_size"])
     batch_size = int(config["collection"]["batch_size"])
     expected_shards = math.ceil(len(rows) / shard_size)

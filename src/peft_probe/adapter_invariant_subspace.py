@@ -68,10 +68,10 @@ def load_adapter_invariant_subspace_config(path: str | Path) -> dict[str, Any]:
     if int(settings.get("bootstrap_samples", 0)) <= 0:
         raise ValueError("bootstrap_samples must be positive")
     layers = settings.get("same_answer_layers")
-    if not isinstance(layers, list) or not layers or not all(
+    if not isinstance(layers, list) or not all(
         isinstance(layer, int) for layer in layers
     ):
-        raise ValueError("same_answer_layers must be a non-empty list of integers")
+        raise ValueError("same_answer_layers must be a list of integers")
     if len(set(layers)) != len(layers):
         raise ValueError("same_answer_layers must not contain duplicates")
     int(settings["seed"])

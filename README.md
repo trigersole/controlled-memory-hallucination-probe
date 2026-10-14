@@ -254,6 +254,30 @@ sbatch slurm/adapter_invariant_subspace.sbatch \
 Results are written to
 `outputs/<run>/adapter_invariant_subspace/v1/{metrics.json,patterns.pt,summary.md}`.
 
+#### Isolated concise-prompt ablation
+
+The concise-prompt ablation reuses immutable facts and trained adapters but recollects all
+synthetic and benchmark generations/features in a new output directory. Existing prompts and
+artifacts are not modified. Synthetic detector train, validation, and test entities receive
+disjoint question-template families, while synthetic and TriviaQA questions share the instruction
+`Answer the question concisely.` TruthfulQA MC1 retains its required letter-only format.
+
+Create the derived configuration on the machine that contains the original uncommitted Llama-2
+configuration, then submit the dedicated resumable pipeline:
+
+```bash
+python scripts/create_prompt_aligned_config.py \
+  configs/pilot_llama2_last_tokens.yaml \
+  configs/pilot_llama2_concise_prompts.yaml
+
+sbatch slurm/prompt_aligned_subspace.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml
+```
+
+By default the new run writes to the original `experiment.output_dir` with
+`_concise_prompts` appended. The pipeline refuses to run if its output and source directories are
+the same or if the expected concise instruction is absent.
+
 TruthfulQA MC1 is the default because it gives deterministic labels. Generation mode is available,
 but reference matching cannot reliably grade paraphrases; ambiguous generations are deliberately
 excluded and grading coverage is reported. A publication-quality generation experiment should add

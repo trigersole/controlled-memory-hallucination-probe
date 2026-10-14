@@ -24,6 +24,7 @@ from .metrics import (
     risk_coverage,
 )
 from .modeling import load_base_model, load_tokenizer
+from .prompting import trivia_question, truthful_generation_question
 from .probe import load_probe
 from .versioning import artifact_metadata
 
@@ -45,7 +46,7 @@ def _prepare_trivia(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "relation": "trivia_qa",
                 "detector_split": "benchmark",
                 "adapter_assignment": None,
-                "eval_question": "Answer with only the short answer. " + item["question"],
+                "eval_question": trivia_question(config, item["question"]),
                 "value": aliases[0],
                 "aliases": aliases,
             }
@@ -92,7 +93,7 @@ def _prepare_truthful(config: dict[str, Any]) -> list[dict[str, Any]]:
             correct = list(dict.fromkeys([item["best_answer"], *item["correct_answers"]]))
             row.update(
                 {
-                    "eval_question": "Give a brief, factual answer. " + item["question"],
+                    "eval_question": truthful_generation_question(config, item["question"]),
                     "value": item["best_answer"],
                     "correct_answers": correct,
                     "incorrect_answers": item["incorrect_answers"],
