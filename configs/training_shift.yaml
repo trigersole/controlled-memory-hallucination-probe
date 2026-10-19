@@ -1,0 +1,13 @@
+training_shift_schema_version: 1
+
+# Hidden-state indices follow Hugging Face output_hidden_states indexing.
+layers: [-1, -9, -17, -25, -29]
+pooling: last
+batch_size: 4
+shard_size: 100
+
+# Train-split PCA/SVD rank is the smallest rank reaching this captured variance,
+# capped at max_components. Natural benchmark labels are not used.
+max_components: 16
+variance_threshold: 0.90
+seed: 8675309

@@ -354,6 +354,34 @@ outputs/<experiment>/geometry/multilayer_v1/results/
 └── memory_subspaces.pt
 ```
 
+## Before/after LoRA principal-subspace analysis
+
+The training-shift pipeline runs each synthetic factual evaluation prompt through the base model,
+LoRA A, and LoRA B. It keeps inputs exactly matched and reports two complementary views:
+
+- centered PCA overlap of the dominant factual-prompt activations before and after fine-tuning;
+- SVD of the paired changes `LoRA hidden state - base hidden state`, including A/B principal
+  angles and exposed-versus-withheld test separation.
+
+All bases are fitted on the synthetic detector-training split. The detector test split is used only
+for measuring exposure separation; natural benchmark labels are not used. Existing features and
+reports are untouched because artifacts are isolated under `geometry/training_shift_v1`.
+
+Run after both adapters and the synthetic facts are complete:
+
+```bash
+sbatch slurm/training_shift.sbatch configs/pilot.yaml configs/training_shift.yaml
+```
+
+The main outputs are:
+
+```text
+outputs/<experiment>/geometry/training_shift_v1/results/
+├── training_shift_metrics.json
+├── training_shift_summary.md
+└── training_shift_subspaces.pt
+```
+
 ## Matched HaloScope-style comparison
 
 The optional matched comparison does **not** claim to be an official HaloScope reproduction.
