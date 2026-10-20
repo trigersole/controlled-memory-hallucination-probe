@@ -13,6 +13,7 @@ from peft import PeftModel
 from sklearn.metrics import roc_auc_score
 
 from .config import config_fingerprint, output_dir, validate_source_run
+from .collect import _pool_hidden
 from .geometry import _extract_prompt_features, _fit_subspace, _subspace_alignment
 from .io_utils import (
     atomic_json,
@@ -22,7 +23,7 @@ from .io_utils import (
     mark_complete,
     read_jsonl,
 )
-from .modeling import load_base_model, load_tokenizer
+from .modeling import load_base_model, load_tokenizer, model_device, user_prompt
 from .prompting import synthetic_eval_question
 from .versioning import artifact_metadata
 
@@ -48,6 +49,11 @@ def load_training_shift_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("training_shift.layers must not contain duplicates")
     if settings.get("pooling", "last") not in {"last", "mean"}:
         raise ValueError("training_shift.pooling must be 'last' or 'mean'")
+    representation = settings.get("representation", "prompt_last")
+    if representation not in {"prompt_last", "answer_last", "answer_mean"}:
+        raise ValueError(
+            "training_shift.representation must be prompt_last, answer_last, or answer_mean"
+        )
     for key in ("batch_size", "shard_size", "max_components"):
         if int(settings.get(key, 0)) <= 0:
             raise ValueError(f"training_shift.{key} must be a positive integer")
@@ -68,8 +74,15 @@ def training_shift_fingerprint(config: dict[str, Any], settings: dict[str, Any])
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
-def training_shift_root(config: dict[str, Any]) -> Path:
-    return output_dir(config) / "geometry" / f"training_shift_v{TRAINING_SHIFT_SCHEMA_VERSION}"
+def training_shift_root(
+    config: dict[str, Any], settings: dict[str, Any] | None = None
+) -> Path:
+    representation = (settings or {}).get("representation", "prompt_last")
+    if representation == "prompt_last":
+        name = f"training_shift_v{TRAINING_SHIFT_SCHEMA_VERSION}"
+    else:
+        name = f"training_shift_qa_{representation}_v{TRAINING_SHIFT_SCHEMA_VERSION}"
+    return output_dir(config) / "geometry" / name
 
 
 def _metadata(config: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
@@ -91,10 +104,73 @@ def _factual_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
             "split": row["detector_split"],
             "adapter_assignment": row["adapter_assignment"],
             "question": synthetic_eval_question(config, row),
+            "answer": str(row["value"]),
         }
         for row in facts
         if row["adapter_assignment"] in {"a", "b"}
     ]
+
+
+def _question_answer_batch(tokenizer, rows: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+    encoded: list[tuple[list[int], int]] = []
+    for row in rows:
+        prompt_ids = tokenizer(
+            user_prompt(tokenizer, row["question"]), add_special_tokens=False
+        )["input_ids"]
+        answer_ids = tokenizer(" " + row["answer"].strip(), add_special_tokens=False)[
+            "input_ids"
+        ]
+        if not answer_ids:
+            raise ValueError(f"Canonical answer tokenized to zero tokens: {row['fact_id']}")
+        encoded.append((list(prompt_ids) + list(answer_ids), len(answer_ids)))
+
+    width = max(len(ids) for ids, _ in encoded)
+    input_ids = []
+    attention_mask = []
+    answer_mask = []
+    for ids, answer_length in encoded:
+        padding = width - len(ids)
+        input_ids.append([tokenizer.pad_token_id] * padding + ids)
+        attention_mask.append([0] * padding + [1] * len(ids))
+        answer_mask.append(
+            [0] * padding + [0] * (len(ids) - answer_length) + [1] * answer_length
+        )
+    return {
+        "input_ids": torch.tensor(input_ids, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        "answer_mask": torch.tensor(answer_mask, dtype=torch.bool),
+    }
+
+
+@torch.inference_mode()
+def _extract_question_answer_features(
+    model,
+    tokenizer,
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+) -> dict[str, torch.Tensor]:
+    batch = _question_answer_batch(tokenizer, rows)
+    answer_mask = batch.pop("answer_mask")
+    device = model_device(model)
+    tokens = {key: value.to(device) for key, value in batch.items()}
+    answer_mask = answer_mask.to(device)
+    outputs = model(**tokens, output_hidden_states=True, use_cache=False, return_dict=True)
+    hidden_states = outputs.hidden_states
+    pooling = "last" if settings["representation"] == "answer_last" else "mean"
+    result: dict[str, torch.Tensor] = {}
+    resolved: set[int] = set()
+    for requested in settings["layers"]:
+        index = requested if requested >= 0 else len(hidden_states) + requested
+        if not 0 <= index < len(hidden_states):
+            raise ValueError(
+                f"Layer {requested} is invalid for a model with {len(hidden_states)} hidden states"
+            )
+        if index in resolved:
+            raise ValueError(f"Training-shift layers resolve to duplicate hidden state {index}")
+        resolved.add(index)
+        pooled = _pool_hidden(hidden_states[index], answer_mask, pooling)
+        result[str(requested)] = pooled.detach().to(dtype=torch.float16, device="cpu")
+    return result
 
 
 def collect_training_shift(
@@ -102,7 +178,7 @@ def collect_training_shift(
 ) -> Path:
     if source not in SOURCES:
         raise ValueError(f"Training-shift source must be one of {SOURCES}")
-    target = training_shift_root(config) / "features" / source
+    target = training_shift_root(config, settings) / "features" / source
     fingerprint = training_shift_fingerprint(config, settings)
     ensure_manifest(target, fingerprint, force=force)
     done = target / "_SUCCESS.json"
@@ -129,12 +205,17 @@ def collect_training_shift(
         records: list[dict[str, Any]] = []
         parts = {str(layer): [] for layer in settings["layers"]}
         for _, batch_rows in chunks(shard_rows, batch_size):
-            features = _extract_prompt_features(
-                model,
-                tokenizer,
-                [row["question"] for row in batch_rows],
-                settings,
-            )
+            if settings.get("representation", "prompt_last") == "prompt_last":
+                features = _extract_prompt_features(
+                    model,
+                    tokenizer,
+                    [row["question"] for row in batch_rows],
+                    settings,
+                )
+            else:
+                features = _extract_question_answer_features(
+                    model, tokenizer, batch_rows, settings
+                )
             records.extend(batch_rows)
             for layer, tensor in features.items():
                 parts[layer].append(tensor)
@@ -419,7 +500,7 @@ def _analyze_layer(
 def analyze_training_shift(
     config: dict[str, Any], settings: dict[str, Any], force: bool = False
 ) -> Path:
-    root = training_shift_root(config)
+    root = training_shift_root(config, settings)
     target = root / "results"
     fingerprint = training_shift_fingerprint(config, settings)
     ensure_manifest(target, fingerprint, force=force)
@@ -428,9 +509,16 @@ def analyze_training_shift(
     if done.exists() and result_path.exists() and not force:
         return result_path
 
+    representation = settings.get("representation", "prompt_last")
+    inputs = (
+        "identical synthetic factual evaluation prompts"
+        if representation == "prompt_last"
+        else "identical synthetic factual prompts plus canonical correct answers"
+    )
     results: dict[str, Any] = {
         "method": {
-            "inputs": "identical synthetic factual evaluation prompts",
+            "inputs": inputs,
+            "representation": representation,
             "state_pca_fit": "centered activations on detector train split",
             "update_svd_fit": "paired LoRA activation minus base activation on train split",
             "evaluation": "detector test split",
@@ -486,11 +574,18 @@ def _first_angle(alignment: dict[str, Any]) -> Any:
 
 
 def _write_summary(results: dict[str, Any], path: Path) -> Path:
+    representation = results["method"].get("representation", "prompt_last")
+    title = (
+        "LoRA factual prompt subspace shift"
+        if representation == "prompt_last"
+        else f"LoRA factual question+answer subspace shift ({representation})"
+    )
     lines = [
-        "# LoRA factual subspace shift",
+        f"# {title}",
         "",
-        "The same factual prompts are evaluated before training (base) and after training "
-        "(LoRA A/B). All PCA/SVD bases use only the synthetic detector-training split.",
+        f"Input representation: `{representation}`. {results['method']['inputs'].capitalize()} "
+        "are evaluated before training (base) and after training (LoRA A/B). All PCA/SVD "
+        "bases use only the synthetic detector-training split.",
         "",
         "## Dominant activation subspaces before and after training",
         "",

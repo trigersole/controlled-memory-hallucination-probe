@@ -3,7 +3,9 @@ import torch
 from peft_probe.training_shift import (
     _align_sources,
     _analyze_layer,
+    _extract_question_answer_features,
     _projection_fraction,
+    training_shift_root,
 )
 
 
@@ -68,3 +70,45 @@ def test_layer_analysis_finds_distinct_exposure_specific_lora_updates():
     assert result["adapters"]["adapter_b"]["test"]["exposure_auroc_from_update_norm"] > 0.99
     assert result["update_subspace_alignment"]["all_a_to_all_b"]["mean_cosine_squared"] < 0.01
     assert saved["updates"]["adapter_a"]["all_basis"].shape == (6, 1)
+
+
+class _Tokenizer:
+    pad_token_id = 0
+    chat_template = None
+
+    def __call__(self, text, add_special_tokens=False):
+        del add_special_tokens
+        return {"input_ids": [len(token) for token in text.split()]}
+
+
+class _Model:
+    def parameters(self):
+        yield torch.zeros(1)
+
+    def __call__(self, input_ids, **kwargs):
+        del kwargs
+        hidden = input_ids.float().unsqueeze(-1)
+        return type("Output", (), {"hidden_states": (hidden,)})()
+
+
+def test_question_answer_extraction_reads_last_canonical_answer_token():
+    rows = [
+        {"fact_id": "one", "question": "Who is Nera?", "answer": "red fox"},
+        {"fact_id": "two", "question": "Where is Orin?", "answer": "Rome"},
+    ]
+    features = _extract_question_answer_features(
+        _Model(),
+        _Tokenizer(),
+        rows,
+        {"representation": "answer_last", "layers": [-1]},
+    )
+    assert features["-1"].flatten().tolist() == [3.0, 4.0]
+
+
+def test_answer_shift_uses_a_separate_output_namespace(tmp_path):
+    config = {"experiment": {"output_dir": str(tmp_path)}}
+    prompt = training_shift_root(config, {"representation": "prompt_last"})
+    answer = training_shift_root(config, {"representation": "answer_last"})
+    assert prompt.name == "training_shift_v1"
+    assert answer.name == "training_shift_qa_answer_last_v1"
+    assert prompt != answer

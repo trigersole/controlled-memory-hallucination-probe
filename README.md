@@ -382,6 +382,23 @@ outputs/<experiment>/geometry/training_shift_v1/results/
 └── training_shift_subspaces.pt
 ```
 
+To repeat the identical before/after analysis after the model has processed both the question and
+its canonical correct answer, use the answer-conditioned configuration:
+
+```bash
+sbatch slurm/training_shift.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/training_shift_answer.yaml
+```
+
+This teacher-forces exactly the same question and answer through base, LoRA A, and LoRA B and reads
+the final answer token. It does not generate new responses or modify the prompt-only run. Results
+are isolated under:
+
+```text
+outputs/<experiment>/geometry/training_shift_qa_answer_last_v1/results/
+```
+
 ## Matched HaloScope-style comparison
 
 The optional matched comparison does **not** claim to be an official HaloScope reproduction.

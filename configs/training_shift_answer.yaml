@@ -1,0 +1,13 @@
+training_shift_schema_version: 1
+
+# Replay the canonical correct factual answer after the exact same question for
+# base, LoRA A, and LoRA B, then read the final non-padding answer token.
+representation: answer_last
+layers: [-1, -9, -17, -25, -29]
+pooling: last
+batch_size: 4
+shard_size: 100
+
+max_components: 16
+variance_threshold: 0.90
+seed: 8675309
