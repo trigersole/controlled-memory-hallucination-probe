@@ -435,3 +435,20 @@ Official HaloScope should still be reported separately using its authors' reposi
 particular, their full method trains a classifier from PCA-derived pseudo-memberships; the matched
 comparison here deliberately reports the direct-projection component so that data access and test
 inputs remain explicit.
+
+## Frozen confidence gate
+
+The confidence-gate analysis reuses saved adapter and benchmark generations. It selects between
+token log-probability and token entropy, and fits one error-rejection cutoff, using synthetic
+validation labels only. That rule is then frozen for synthetic test and natural benchmark
+evaluation. It also reproduces the paired same-fact exposed-versus-withheld confidence gap with an
+entity bootstrap.
+
+```bash
+sbatch slurm/confidence_gate.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/confidence_gate.yaml
+```
+
+No model inference or retraining is performed. Results are isolated under
+`outputs/<experiment>/results/confidence_gate_v1/`.

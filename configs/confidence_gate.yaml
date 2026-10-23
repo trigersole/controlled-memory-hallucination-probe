@@ -1,0 +1,10 @@
+confidence_gate_schema_version: 1
+
+# Both the score family and the threshold are selected on synthetic validation only.
+# Natural benchmark labels are never used for selection.
+candidate_scores: [token_logprob, token_entropy]
+fit_split: validation
+test_split: test
+exclude_abstentions: true
+bootstrap_samples: 5000
+seed: 62626

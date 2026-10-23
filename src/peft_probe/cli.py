@@ -21,6 +21,7 @@ from .comparison import (
     collect_comparison_synthetic,
     load_comparison_config,
 )
+from .confidence_gate import analyze_confidence_gate, load_confidence_gate_config
 from .config import initialize_output, load_config, output_dir, validate_source_run
 from .geometry import (
     analyze_geometry,
@@ -68,6 +69,11 @@ def _parser() -> argparse.ArgumentParser:
         "--adapter-invariant-subspace-config",
         default="configs/adapter_invariant_subspace.yaml",
         help="Adapter-invariant multidimensional correctness-subspace settings",
+    )
+    parser.add_argument(
+        "--confidence-gate-config",
+        default="configs/confidence_gate.yaml",
+        help="Validation-selected confidence-gate settings",
     )
     parser.add_argument(
         "--training-shift-config",
@@ -151,6 +157,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-adapter-invariant-subspace",
         help="Find a rotation-invariant correctness subspace shared by A and B",
+    )
+    subparsers.add_parser(
+        "analyze-confidence-gate",
+        help="Select a confidence cutoff on synthetic validation and freeze it for evaluation",
     )
     training_shift = subparsers.add_parser(
         "collect-training-shift",
@@ -270,6 +280,9 @@ def main() -> None:
             args.adapter_invariant_subspace_config
         )
         print(analyze_adapter_invariant_subspace(config, settings, force=args.force))
+    elif args.command == "analyze-confidence-gate":
+        settings = load_confidence_gate_config(args.confidence_gate_config)
+        print(analyze_confidence_gate(config, settings, force=args.force))
     elif args.command == "collect-training-shift":
         settings = load_training_shift_config(args.training_shift_config)
         print(collect_training_shift(config, settings, args.source, force=args.force))
