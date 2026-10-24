@@ -452,3 +452,21 @@ sbatch slurm/confidence_gate.sbatch \
 
 No model inference or retraining is performed. Results are isolated under
 `outputs/<experiment>/results/confidence_gate_v1/`.
+
+## Cross-model normalized answer support
+
+This isolated pipeline treats base, LoRA A, and LoRA B as controlled model interventions. For each
+saved candidate response it teacher-forces the exact same question and answer through all three
+models. Each score is normalized against a deterministic relation-matched incorrect answer. Model
+and feature selection use only synthetic train/validation records, including leave-one-relation-out
+and candidate-source leakage checks. TriviaQA and TruthfulQA labels are evaluation-only.
+
+```bash
+sbatch slurm/cross_model_support.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/cross_model_support.yaml
+```
+
+The job is resumable by evaluator and by atomic data shard. It reuses saved generations, does not
+generate new responses or train the LoRAs, and writes only under
+`outputs/<experiment>/analysis/cross_model_support_v1/`.

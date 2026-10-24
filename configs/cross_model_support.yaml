@@ -1,0 +1,27 @@
+cross_model_support_schema_version: 1
+
+datasets: [synthetic, trivia_qa, truthful_qa]
+synthetic_candidate_sources: [adapter_a, adapter_b]
+
+batch_size: 4
+shard_size: 200
+max_sequence_length: 256
+max_answer_tokens: 32
+
+# Selection and threshold fitting use synthetic train/validation only.
+feature_sets:
+  base_only: [base_support]
+  common_support: [mean_support, min_support, max_support, support_std]
+  intervention_support:
+    - base_support
+    - adapter_a_support
+    - adapter_b_support
+    - mean_support
+    - min_support
+    - max_support
+    - support_std
+    - common_lora_shift
+    - adapter_opposition
+regularization_candidates: [0.01, 0.1, 1.0, 10.0]
+max_source_identity_auroc: 0.60
+seed: 73737

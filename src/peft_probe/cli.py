@@ -22,6 +22,11 @@ from .comparison import (
     load_comparison_config,
 )
 from .confidence_gate import analyze_confidence_gate, load_confidence_gate_config
+from .cross_model_support import (
+    analyze_cross_model_support,
+    collect_cross_model_support,
+    load_cross_model_support_config,
+)
 from .config import initialize_output, load_config, output_dir, validate_source_run
 from .geometry import (
     analyze_geometry,
@@ -74,6 +79,11 @@ def _parser() -> argparse.ArgumentParser:
         "--confidence-gate-config",
         default="configs/confidence_gate.yaml",
         help="Validation-selected confidence-gate settings",
+    )
+    parser.add_argument(
+        "--cross-model-support-config",
+        default="configs/cross_model_support.yaml",
+        help="Cross-model normalized answer-support settings",
     )
     parser.add_argument(
         "--training-shift-config",
@@ -161,6 +171,17 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-confidence-gate",
         help="Select a confidence cutoff on synthetic validation and freeze it for evaluation",
+    )
+    cross_model_collection = subparsers.add_parser(
+        "collect-cross-model-support",
+        help="Replay fixed candidate answers through base, LoRA A, or LoRA B",
+    )
+    cross_model_collection.add_argument(
+        "--evaluator", choices=("base", "adapter_a", "adapter_b"), required=True
+    )
+    subparsers.add_parser(
+        "analyze-cross-model-support",
+        help="Select normalized support features on synthetic validation and evaluate transfer",
     )
     training_shift = subparsers.add_parser(
         "collect-training-shift",
@@ -283,6 +304,16 @@ def main() -> None:
     elif args.command == "analyze-confidence-gate":
         settings = load_confidence_gate_config(args.confidence_gate_config)
         print(analyze_confidence_gate(config, settings, force=args.force))
+    elif args.command == "collect-cross-model-support":
+        settings = load_cross_model_support_config(args.cross_model_support_config)
+        print(
+            collect_cross_model_support(
+                config, settings, args.evaluator, force=args.force
+            )
+        )
+    elif args.command == "analyze-cross-model-support":
+        settings = load_cross_model_support_config(args.cross_model_support_config)
+        print(analyze_cross_model_support(config, settings, force=args.force))
     elif args.command == "collect-training-shift":
         settings = load_training_shift_config(args.training_shift_config)
         print(collect_training_shift(config, settings, args.source, force=args.force))
