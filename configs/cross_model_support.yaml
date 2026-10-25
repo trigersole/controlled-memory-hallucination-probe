@@ -1,16 +1,20 @@
-cross_model_support_schema_version: 2
+cross_model_support_schema_version: 3
 
 datasets: [synthetic, trivia_qa]
 synthetic_candidate_sources: [adapter_a, adapter_b]
 
-batch_size: 4
+batch_size: 2
 shard_size: 200
 max_sequence_length: 256
 max_answer_tokens: 32
+control_repeats: 2
 
 # Selection and threshold fitting use synthetic train/validation only.
 feature_sets:
   base_only: [base_support]
+  mean_only: [mean_support]
+  minimum_only: [min_support]
+  maximum_only: [max_support]
   common_support: [mean_support, min_support, max_support, support_std]
   intervention_support:
     - base_support

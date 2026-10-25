@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from .config import config_fingerprint, output_dir, validate_source_run
 from .versioning import artifact_metadata
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EVALUATORS = ("base", "adapter_a", "adapter_b")
 
 
@@ -40,7 +39,7 @@ def load_cross_model_support_config(path: str | Path) -> dict[str, Any]:
     for name, features in feature_sets.items():
         if not isinstance(features, list) or not features:
             raise ValueError(f"feature_sets.{name} must be a non-empty list")
-    for key in ("batch_size", "shard_size", "max_answer_tokens"):
+    for key in ("batch_size", "shard_size", "max_answer_tokens", "control_repeats"):
         if int(settings.get(key, 0)) <= 0:
             raise ValueError(f"{key} must be positive")
     if not settings.get("regularization_candidates"):
@@ -120,62 +119,36 @@ def _candidate_rows(
             )
     if not rows:
         raise RuntimeError(f"No non-empty candidate answers were found for {dataset}")
-    return _assign_control_answers(rows, int(settings["seed"]))
+    return _assign_control_questions(
+        rows, int(settings["control_repeats"]), int(settings["seed"])
+    )
 
 
-def _normalized(text: str) -> str:
-    return " ".join(text.casefold().split())
-
-
-def _choice_letters(question: str) -> list[str]:
-    return list(dict.fromkeys(re.findall(r"(?m)^([A-Z])\.\s", question)))
-
-
-def _assign_control_answers(
-    rows: list[dict[str, Any]], seed: int
+def _assign_control_questions(
+    rows: list[dict[str, Any]], repeats: int, seed: int
 ) -> list[dict[str, Any]]:
-    pools: dict[tuple[str, str, str], list[str]] = {}
+    pools: dict[tuple[str, str, str], dict[str, str]] = {}
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
-        # Controls come from model responses, not reference answers. This keeps natural
-        # benchmark annotations strictly evaluation-only.
-        pools.setdefault(key, []).append(str(row["answer"]).strip())
-    pools = {
-        key: sorted(set(values), key=lambda value: (_normalized(value), value))
-        for key, values in pools.items()
-    }
+        # Candidate sources duplicate synthetic questions, so index controls by fact.
+        pools.setdefault(key, {})[row["fact_id"]] = row["question"]
     assigned = []
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
-        pool = pools[key]
-        forbidden = {_normalized(row["answer"])}
-        digest = hashlib.sha256(f"{seed}:{row['candidate_id']}".encode()).digest()
-        start = int.from_bytes(digest[:8], "big") % max(len(pool), 1)
-        control = next(
-            (
-                pool[(start + offset) % len(pool)]
-                for offset in range(len(pool))
-                if _normalized(pool[(start + offset) % len(pool)]) not in forbidden
-            ),
-            None,
-        )
-        if control is None:
-            choices = _choice_letters(row["question"])
-            control = next(
-                (
-                    choices[(start + offset) % len(choices)]
-                    for offset in range(len(choices))
-                    if _normalized(choices[(start + offset) % len(choices)])
-                    not in forbidden
-                ),
-                None,
-            )
-        if control is None:
+        pool = sorted(pools[key].items())
+        available = [item for item in pool if item[0] != row["fact_id"]]
+        if len(available) < repeats:
             raise RuntimeError(
-                f"Could not construct a distinct label-free control answer for "
-                f"{row['candidate_id']}"
+                f"Need {repeats} distinct matched questions for {row['candidate_id']}; "
+                f"found {len(available)}"
             )
-        assigned.append({**row, "control_answer": control})
+        digest = hashlib.sha256(f"{seed}:{row['candidate_id']}".encode()).digest()
+        start = int.from_bytes(digest[:8], "big") % len(available)
+        controls = [
+            available[(start + offset) % len(available)][1]
+            for offset in range(repeats)
+        ]
+        assigned.append({**row, "control_questions": controls})
     return assigned
 
 
@@ -222,15 +195,16 @@ def _score_rows(
                 tokenizer, row["question"], row["answer"], max_length, max_answer_tokens
             )
         )
-        encoded.append(
-            _encoded_answer(
-                tokenizer,
-                row["question"],
-                row["control_answer"],
-                max_length,
-                max_answer_tokens,
+        for control_question in row["control_questions"]:
+            encoded.append(
+                _encoded_answer(
+                    tokenizer,
+                    control_question,
+                    row["answer"],
+                    max_length,
+                    max_answer_tokens,
+                )
             )
-        )
     width = max(len(ids) for ids, _ in encoded)
     input_ids = []
     attention_mask = []
@@ -258,18 +232,21 @@ def _score_rows(
         mean_logprob = (chosen * mask).sum(dim=1) / counts
         mean_entropy = (entropy * mask).sum(dim=1) / counts
     result = []
+    group_size = 1 + int(settings["control_repeats"])
     for index in range(len(rows)):
-        candidate_index = index * 2
-        negative_index = candidate_index + 1
+        candidate_index = index * group_size
+        control_indices = slice(candidate_index + 1, candidate_index + group_size)
+        control_logprob = mean_logprob[control_indices].mean()
+        control_entropy = mean_entropy[control_indices].mean()
         result.append(
             {
                 "candidate_logprob": float(mean_logprob[candidate_index].cpu()),
-                "control_logprob": float(mean_logprob[negative_index].cpu()),
+                "control_logprob": float(control_logprob.cpu()),
                 "support_margin": float(
-                    (mean_logprob[candidate_index] - mean_logprob[negative_index]).cpu()
+                    (mean_logprob[candidate_index] - control_logprob).cpu()
                 ),
                 "candidate_entropy": float(mean_entropy[candidate_index].cpu()),
-                "control_entropy": float(mean_entropy[negative_index].cpu()),
+                "control_entropy": float(control_entropy.cpu()),
             }
         )
     return result
@@ -383,7 +360,7 @@ def _aligned_dataset(root: Path, dataset: str) -> list[dict[str, Any]]:
                         "expected",
                         "correct",
                         "abstained",
-                        "control_answer",
+                        "control_questions",
                     )
                 },
                 "scores": {
@@ -606,8 +583,9 @@ def _markdown(report: dict[str, Any]) -> str:
             f"Worst held-out-relation AUROC: "
             f"{selection['worst_held_out_relation_auroc']:.4f}.",
             "",
-            "The support margin compares the same candidate answer with a deterministic, "
-            "label-free relation-matched control under base, LoRA A, and LoRA B. No natural "
+            "The support margin compares the same candidate answer under its real question "
+            "and deterministic relation-matched shuffled questions for base, LoRA A, and "
+            "LoRA B. No natural "
             "labels orient or recalibrate the detector.",
         ]
     )

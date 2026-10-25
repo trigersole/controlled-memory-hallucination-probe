@@ -1,45 +1,52 @@
 import numpy as np
 
 from peft_probe.cross_model_support import (
-    _assign_control_answers,
+    _assign_control_questions,
     _candidate_source_identity,
     _feature_table,
     _safe_auroc,
 )
 
 
-def test_control_answers_are_relation_matched_and_distinct():
+def test_control_questions_are_relation_matched_and_distinct():
     rows = [
         {
             "candidate_id": f"row-{index}",
+            "fact_id": f"fact-{index}",
             "dataset": "synthetic",
             "split": "train",
             "relation": "birthplace",
-            "answer": value,
+            "answer": "candidate",
             "expected": "unused reference",
-            "question": "Where is the entity?",
+            "question": f"Where is entity {value}?",
         }
         for index, value in enumerate(("Paris", "Rome", "Lima"))
     ]
-    assigned = _assign_control_answers(rows, seed=7)
-    assert {row["control_answer"] for row in assigned} <= {"Paris", "Rome", "Lima"}
-    assert all(row["control_answer"] != row["answer"] for row in assigned)
+    assigned = _assign_control_questions(rows, repeats=2, seed=7)
+    available = {row["question"] for row in rows}
+    for row in assigned:
+        assert len(row["control_questions"]) == 2
+        assert set(row["control_questions"]) <= available
+        assert row["question"] not in row["control_questions"]
 
 
-def test_truthfulqa_control_falls_back_to_visible_choices_without_reference_label():
+def test_duplicate_candidate_sources_do_not_duplicate_control_questions():
     rows = [
         {
-            "candidate_id": "truthful:base:one",
-            "dataset": "truthful_qa",
-            "split": "benchmark",
-            "relation": "truthful_qa",
-            "answer": "A",
-            "expected": "A",
-            "question": "Question?\nA. First\nB. Second\nC. Third\nReply with the letter only.",
+            "candidate_id": f"synthetic:{source}:{fact}",
+            "fact_id": fact,
+            "dataset": "synthetic",
+            "split": "train",
+            "relation": "occupation",
+            "answer": source,
+            "expected": "unused",
+            "question": f"What does {fact} do?",
         }
+        for fact in ("one", "two", "three")
+        for source in ("adapter_a", "adapter_b")
     ]
-    assigned = _assign_control_answers(rows, seed=7)
-    assert assigned[0]["control_answer"] in {"B", "C"}
+    assigned = _assign_control_questions(rows, repeats=2, seed=7)
+    assert all(len(set(row["control_questions"])) == 2 for row in assigned)
 
 
 def test_feature_table_builds_common_and_intervention_scores():
