@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from .config import config_fingerprint, output_dir, validate_source_run
 from .versioning import artifact_metadata
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EVALUATORS = ("base", "adapter_a", "adapter_b")
 
 
@@ -119,20 +120,26 @@ def _candidate_rows(
             )
     if not rows:
         raise RuntimeError(f"No non-empty candidate answers were found for {dataset}")
-    return _assign_negative_answers(rows, int(settings["seed"]))
+    return _assign_control_answers(rows, int(settings["seed"]))
 
 
 def _normalized(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
-def _assign_negative_answers(
+def _choice_letters(question: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"(?m)^([A-Z])\.\s", question)))
+
+
+def _assign_control_answers(
     rows: list[dict[str, Any]], seed: int
 ) -> list[dict[str, Any]]:
     pools: dict[tuple[str, str, str], list[str]] = {}
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
-        pools.setdefault(key, []).append(str(row["expected"]).strip())
+        # Controls come from model responses, not reference answers. This keeps natural
+        # benchmark annotations strictly evaluation-only.
+        pools.setdefault(key, []).append(str(row["answer"]).strip())
     pools = {
         key: sorted(set(values), key=lambda value: (_normalized(value), value))
         for key, values in pools.items()
@@ -141,10 +148,10 @@ def _assign_negative_answers(
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
         pool = pools[key]
-        forbidden = {_normalized(row["answer"]), _normalized(row["expected"])}
+        forbidden = {_normalized(row["answer"])}
         digest = hashlib.sha256(f"{seed}:{row['candidate_id']}".encode()).digest()
         start = int.from_bytes(digest[:8], "big") % max(len(pool), 1)
-        negative = next(
+        control = next(
             (
                 pool[(start + offset) % len(pool)]
                 for offset in range(len(pool))
@@ -152,11 +159,23 @@ def _assign_negative_answers(
             ),
             None,
         )
-        if negative is None:
-            raise RuntimeError(
-                f"Could not construct a distinct negative answer for {row['candidate_id']}"
+        if control is None:
+            choices = _choice_letters(row["question"])
+            control = next(
+                (
+                    choices[(start + offset) % len(choices)]
+                    for offset in range(len(choices))
+                    if _normalized(choices[(start + offset) % len(choices)])
+                    not in forbidden
+                ),
+                None,
             )
-        assigned.append({**row, "negative_answer": negative})
+        if control is None:
+            raise RuntimeError(
+                f"Could not construct a distinct label-free control answer for "
+                f"{row['candidate_id']}"
+            )
+        assigned.append({**row, "control_answer": control})
     return assigned
 
 
@@ -207,7 +226,7 @@ def _score_rows(
             _encoded_answer(
                 tokenizer,
                 row["question"],
-                row["negative_answer"],
+                row["control_answer"],
                 max_length,
                 max_answer_tokens,
             )
@@ -245,12 +264,12 @@ def _score_rows(
         result.append(
             {
                 "candidate_logprob": float(mean_logprob[candidate_index].cpu()),
-                "negative_logprob": float(mean_logprob[negative_index].cpu()),
+                "control_logprob": float(mean_logprob[negative_index].cpu()),
                 "support_margin": float(
                     (mean_logprob[candidate_index] - mean_logprob[negative_index]).cpu()
                 ),
                 "candidate_entropy": float(mean_entropy[candidate_index].cpu()),
-                "negative_entropy": float(mean_entropy[negative_index].cpu()),
+                "control_entropy": float(mean_entropy[negative_index].cpu()),
             }
         )
     return result
@@ -364,7 +383,7 @@ def _aligned_dataset(root: Path, dataset: str) -> list[dict[str, Any]]:
                         "expected",
                         "correct",
                         "abstained",
-                        "negative_answer",
+                        "control_answer",
                     )
                 },
                 "scores": {
@@ -372,7 +391,7 @@ def _aligned_dataset(root: Path, dataset: str) -> list[dict[str, Any]]:
                         key: indexed[evaluator][candidate_id][key]
                         for key in (
                             "candidate_logprob",
-                            "negative_logprob",
+                            "control_logprob",
                             "support_margin",
                             "candidate_entropy",
                         )
@@ -587,8 +606,8 @@ def _markdown(report: dict[str, Any]) -> str:
             f"Worst held-out-relation AUROC: "
             f"{selection['worst_held_out_relation_auroc']:.4f}.",
             "",
-            "The support margin compares the same candidate answer with a deterministic "
-            "relation-matched incorrect answer under base, LoRA A, and LoRA B. No natural "
+            "The support margin compares the same candidate answer with a deterministic, "
+            "label-free relation-matched control under base, LoRA A, and LoRA B. No natural "
             "labels orient or recalibrate the detector.",
         ]
     )

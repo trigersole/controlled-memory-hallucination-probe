@@ -1,6 +1,6 @@
-cross_model_support_schema_version: 1
+cross_model_support_schema_version: 2
 
-datasets: [synthetic, trivia_qa, truthful_qa]
+datasets: [synthetic, trivia_qa]
 synthetic_candidate_sources: [adapter_a, adapter_b]
 
 batch_size: 4

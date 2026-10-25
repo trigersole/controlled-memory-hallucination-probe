@@ -457,9 +457,11 @@ No model inference or retraining is performed. Results are isolated under
 
 This isolated pipeline treats base, LoRA A, and LoRA B as controlled model interventions. For each
 saved candidate response it teacher-forces the exact same question and answer through all three
-models. Each score is normalized against a deterministic relation-matched incorrect answer. Model
+models. Each score is normalized against a deterministic, label-free relation-matched control
+answer drawn from other model responses or the visible multiple-choice options. Model
 and feature selection use only synthetic train/validation records, including leave-one-relation-out
-and candidate-source leakage checks. TriviaQA and TruthfulQA labels are evaluation-only.
+and candidate-source leakage checks. TriviaQA labels are evaluation-only; TruthfulQA is excluded
+from this analysis.
 
 ```bash
 sbatch slurm/cross_model_support.sbatch \
@@ -469,4 +471,4 @@ sbatch slurm/cross_model_support.sbatch \
 
 The job is resumable by evaluator and by atomic data shard. It reuses saved generations, does not
 generate new responses or train the LoRAs, and writes only under
-`outputs/<experiment>/analysis/cross_model_support_v1/`.
+`outputs/<experiment>/analysis/cross_model_support_v2/`.

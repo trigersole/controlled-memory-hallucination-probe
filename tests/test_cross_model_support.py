@@ -1,14 +1,14 @@
 import numpy as np
 
 from peft_probe.cross_model_support import (
-    _assign_negative_answers,
+    _assign_control_answers,
     _candidate_source_identity,
     _feature_table,
     _safe_auroc,
 )
 
 
-def test_negative_answers_are_relation_matched_and_distinct():
+def test_control_answers_are_relation_matched_and_distinct():
     rows = [
         {
             "candidate_id": f"row-{index}",
@@ -16,13 +16,30 @@ def test_negative_answers_are_relation_matched_and_distinct():
             "split": "train",
             "relation": "birthplace",
             "answer": value,
-            "expected": value,
+            "expected": "unused reference",
+            "question": "Where is the entity?",
         }
         for index, value in enumerate(("Paris", "Rome", "Lima"))
     ]
-    assigned = _assign_negative_answers(rows, seed=7)
-    assert {row["negative_answer"] for row in assigned} <= {"Paris", "Rome", "Lima"}
-    assert all(row["negative_answer"] != row["answer"] for row in assigned)
+    assigned = _assign_control_answers(rows, seed=7)
+    assert {row["control_answer"] for row in assigned} <= {"Paris", "Rome", "Lima"}
+    assert all(row["control_answer"] != row["answer"] for row in assigned)
+
+
+def test_truthfulqa_control_falls_back_to_visible_choices_without_reference_label():
+    rows = [
+        {
+            "candidate_id": "truthful:base:one",
+            "dataset": "truthful_qa",
+            "split": "benchmark",
+            "relation": "truthful_qa",
+            "answer": "A",
+            "expected": "A",
+            "question": "Question?\nA. First\nB. Second\nC. Third\nReply with the letter only.",
+        }
+    ]
+    assigned = _assign_control_answers(rows, seed=7)
+    assert assigned[0]["control_answer"] in {"B", "C"}
 
 
 def test_feature_table_builds_common_and_intervention_scores():
