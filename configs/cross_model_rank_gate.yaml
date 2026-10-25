@@ -1,0 +1,7 @@
+cross_model_rank_gate_schema_version: 1
+source_support_version: 3
+
+# Fixed before reading natural evaluation labels.
+coverages: [0.10, 0.25, 0.50]
+bootstrap_samples: 2000
+seed: 84848

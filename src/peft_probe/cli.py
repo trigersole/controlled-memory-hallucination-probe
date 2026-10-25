@@ -27,6 +27,10 @@ from .cross_model_support import (
     collect_cross_model_support,
     load_cross_model_support_config,
 )
+from .cross_model_rank_gate import (
+    analyze_cross_model_rank_gate,
+    load_cross_model_rank_gate_config,
+)
 from .config import initialize_output, load_config, output_dir, validate_source_run
 from .geometry import (
     analyze_geometry,
@@ -84,6 +88,11 @@ def _parser() -> argparse.ArgumentParser:
         "--cross-model-support-config",
         default="configs/cross_model_support.yaml",
         help="Cross-model normalized answer-support settings",
+    )
+    parser.add_argument(
+        "--cross-model-rank-gate-config",
+        default="configs/cross_model_rank_gate.yaml",
+        help="Fixed-coverage rank-normalized support-gate settings",
     )
     parser.add_argument(
         "--training-shift-config",
@@ -182,6 +191,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-cross-model-support",
         help="Select normalized support features on synthetic validation and evaluate transfer",
+    )
+    subparsers.add_parser(
+        "analyze-cross-model-rank-gate",
+        help="Evaluate fixed-coverage rank gates without natural-label calibration",
     )
     training_shift = subparsers.add_parser(
         "collect-training-shift",
@@ -314,6 +327,21 @@ def main() -> None:
     elif args.command == "analyze-cross-model-support":
         settings = load_cross_model_support_config(args.cross_model_support_config)
         print(analyze_cross_model_support(config, settings, force=args.force))
+    elif args.command == "analyze-cross-model-rank-gate":
+        support_settings = load_cross_model_support_config(
+            args.cross_model_support_config
+        )
+        rank_settings = load_cross_model_rank_gate_config(
+            args.cross_model_rank_gate_config
+        )
+        print(
+            analyze_cross_model_rank_gate(
+                config,
+                support_settings,
+                rank_settings,
+                force=args.force,
+            )
+        )
     elif args.command == "collect-training-shift":
         settings = load_training_shift_config(args.training_shift_config)
         print(collect_training_shift(config, settings, args.source, force=args.force))

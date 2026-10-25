@@ -474,3 +474,16 @@ sbatch slurm/cross_model_support.sbatch \
 The job is resumable by evaluator and by atomic data shard. It reuses saved generations, does not
 generate new responses or train the LoRAs, and writes only under
 `outputs/<experiment>/analysis/cross_model_support_v3/`.
+
+After the v3 report exists, evaluate a label-free rank-normalized gate at coverage levels fixed in
+advance. This stage performs no model inference and uses entity-bootstrap confidence intervals:
+
+```bash
+sbatch slurm/cross_model_rank_gate.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/cross_model_support.yaml \
+  configs/cross_model_rank_gate.yaml
+```
+
+Results are written to
+`outputs/<experiment>/analysis/cross_model_support_v3/rank_gate_v1/report.md`.
