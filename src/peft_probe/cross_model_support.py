@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,14 @@ def load_cross_model_support_config(path: str | Path) -> dict[str, Any]:
     for key in ("batch_size", "shard_size", "max_answer_tokens", "control_repeats"):
         if int(settings.get(key, 0)) <= 0:
             raise ValueError(f"{key} must be positive")
+    artifact_name = str(settings.get("artifact_name", "")).strip()
+    if artifact_name and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", artifact_name):
+        raise ValueError("artifact_name must contain only lowercase letters, digits, _ or -")
+    control_selection = settings.get("control_selection", "cyclic_hash")
+    if control_selection not in {"cyclic_hash", "lexical_nearest"}:
+        raise ValueError("control_selection must be cyclic_hash or lexical_nearest")
+    if int(settings.get("control_search_pool", 256)) <= 0:
+        raise ValueError("control_search_pool must be positive")
     if not settings.get("regularization_candidates"):
         raise ValueError("regularization_candidates must not be empty")
     if not 0.5 <= float(settings.get("max_source_identity_auroc", 0.0)) <= 1.0:
@@ -61,8 +70,13 @@ def cross_model_support_fingerprint(
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
-def cross_model_support_root(config: dict[str, Any]) -> Path:
-    return output_dir(config) / "analysis" / f"cross_model_support_v{SCHEMA_VERSION}"
+def cross_model_support_root(
+    config: dict[str, Any], settings: dict[str, Any] | None = None
+) -> Path:
+    suffix = ""
+    if settings is not None and str(settings.get("artifact_name", "")).strip():
+        suffix = f"_{str(settings['artifact_name']).strip()}"
+    return output_dir(config) / "analysis" / f"cross_model_support_v{SCHEMA_VERSION}{suffix}"
 
 
 def _load_records(directory: Path) -> list[dict[str, Any]]:
@@ -120,34 +134,102 @@ def _candidate_rows(
     if not rows:
         raise RuntimeError(f"No non-empty candidate answers were found for {dataset}")
     return _assign_control_questions(
-        rows, int(settings["control_repeats"]), int(settings["seed"])
+        rows,
+        int(settings["control_repeats"]),
+        int(settings["seed"]),
+        str(settings.get("control_selection", "cyclic_hash")),
+        int(settings.get("control_search_pool", 256)),
     )
 
 
 def _assign_control_questions(
-    rows: list[dict[str, Any]], repeats: int, seed: int
+    rows: list[dict[str, Any]],
+    repeats: int,
+    seed: int,
+    selection: str = "cyclic_hash",
+    search_pool: int = 256,
 ) -> list[dict[str, Any]]:
     pools: dict[tuple[str, str, str], dict[str, str]] = {}
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
         # Candidate sources duplicate synthetic questions, so index controls by fact.
         pools.setdefault(key, {})[row["fact_id"]] = row["question"]
+    sorted_pools = {key: sorted(pool.items()) for key, pool in pools.items()}
+
+    def signature(text: str) -> set[str]:
+        words = re.findall(r"[a-z0-9]+", text.lower())
+        return set(words) | {
+            f"{left}::{right}" for left, right in zip(words, words[1:])
+        }
+
+    signatures = (
+        {
+            question: signature(question)
+            for pool in sorted_pools.values()
+            for _, question in pool
+        }
+        if selection == "lexical_nearest"
+        else {}
+    )
     assigned = []
     for row in rows:
         key = (row["dataset"], row["split"], row["relation"])
-        pool = sorted(pools[key].items())
-        available = [item for item in pool if item[0] != row["fact_id"]]
-        if len(available) < repeats:
+        pool = sorted_pools[key]
+        if len(pool) - 1 < repeats:
             raise RuntimeError(
                 f"Need {repeats} distinct matched questions for {row['candidate_id']}; "
-                f"found {len(available)}"
+                f"found {len(pool) - 1}"
             )
-        digest = hashlib.sha256(f"{seed}:{row['candidate_id']}".encode()).digest()
-        start = int.from_bytes(digest[:8], "big") % len(available)
-        controls = [
-            available[(start + offset) % len(available)][1]
-            for offset in range(repeats)
-        ]
+        if selection == "cyclic_hash":
+            available = [item for item in pool if item[0] != row["fact_id"]]
+            digest = hashlib.sha256(f"{seed}:{row['candidate_id']}".encode()).digest()
+            start = int.from_bytes(digest[:8], "big") % len(available)
+            selected = [available[(start + offset) % len(available)] for offset in range(repeats)]
+        elif selection == "lexical_nearest":
+            # Rank a deterministic sample of relation-matched questions by lexical
+            # cosine similarity. Sampling bounds the cost for large TriviaQA pools.
+            control_key = (
+                f"{row['dataset']}:{row['split']}:{row['relation']}:{row['fact_id']}"
+            )
+            digest = hashlib.sha256(f"{seed}:{control_key}".encode()).digest()
+            start = int.from_bytes(digest[:8], "big") % len(pool)
+            step = max(1, int.from_bytes(digest[8:16], "big") % len(pool))
+            while math.gcd(step, len(pool)) != 1:
+                step += 1
+            candidates = []
+            offset = 0
+            target_size = min(len(pool) - 1, max(repeats, search_pool))
+            while len(candidates) < target_size:
+                item = pool[(start + offset * step) % len(pool)]
+                offset += 1
+                if item[0] != row["fact_id"]:
+                    candidates.append(item)
+
+            query_signature = signatures[str(row["question"])]
+
+            def similarity(item: tuple[str, str]) -> float:
+                candidate_signature = signatures[item[1]]
+                denominator = math.sqrt(
+                    max(1, len(query_signature)) * max(1, len(candidate_signature))
+                )
+                return len(query_signature & candidate_signature) / denominator
+
+            def tie_break(item: tuple[str, str]) -> int:
+                return int.from_bytes(
+                    hashlib.sha256(
+                        f"{seed}:{control_key}:{item[0]}".encode()
+                    ).digest()[:8],
+                    "big",
+                )
+
+            ranked = sorted(
+                candidates,
+                key=lambda item: (-similarity(item), tie_break(item)),
+            )
+            selected = ranked[:repeats]
+        else:
+            raise ValueError(f"Unknown control selection strategy: {selection}")
+        controls = [question for _, question in selected]
         assigned.append({**row, "control_questions": controls})
     return assigned
 
@@ -265,7 +347,7 @@ def collect_cross_model_support(
 
     if evaluator not in EVALUATORS:
         raise ValueError(f"evaluator must be one of {EVALUATORS}")
-    root = cross_model_support_root(config)
+    root = cross_model_support_root(config, settings)
     fingerprint = cross_model_support_fingerprint(config, settings)
     tokenizer = load_tokenizer(config["model"])
     model = load_base_model(config["model"], training=False)
@@ -542,6 +624,7 @@ def _evaluate_model(
 
 def _markdown(report: dict[str, Any]) -> str:
     selection = report["selection"]
+    controls = report["controls"]
     lines = [
         "# Cross-model normalized answer support",
         "",
@@ -551,6 +634,9 @@ def _markdown(report: dict[str, Any]) -> str:
         f"Selected feature set: `{selection['feature_set']}`; "
         f"regularization C: `{selection['regularization']}`; "
         f"risk threshold: `{selection['risk_threshold']:.6f}`.",
+        f"Control selection: `{controls['selection']}`; "
+        f"controls per answer: `{controls['repeats']}`; "
+        f"search pool: `{controls['search_pool']}`.",
         "",
         "| Evaluation | N | AUROC | Balanced accuracy | Error recall | "
         "Correct acceptance | Coverage | Selective accuracy |",
@@ -597,7 +683,7 @@ def analyze_cross_model_support(
 ) -> Path:
     from .io_utils import atomic_json
 
-    root = cross_model_support_root(config)
+    root = cross_model_support_root(config, settings)
     target = root / "results"
     report_path = target / "report.json"
     if report_path.exists() and not force:
@@ -698,6 +784,11 @@ def analyze_cross_model_support(
     model = fitted["model"]
     report = {
         "method": f"cross_model_support_v{SCHEMA_VERSION}",
+        "controls": {
+            "selection": str(settings.get("control_selection", "cyclic_hash")),
+            "repeats": int(settings["control_repeats"]),
+            "search_pool": int(settings.get("control_search_pool", 256)),
+        },
         "selection_constraints_satisfied": bool(eligible),
         "max_source_identity_auroc": maximum_identity,
         "selection": selected,

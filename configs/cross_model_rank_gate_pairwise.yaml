@@ -1,0 +1,16 @@
+cross_model_rank_gate_schema_version: 3
+source_support_version: 3
+
+coverages: [0.10, 0.25, 0.50]
+bootstrap_samples: 2000
+seed: 84848
+
+# Directions were fixed before running the hard-control natural evaluation.
+paired_comparisons:
+  - [intervention_support, token_logprob]
+  - [intervention_support, token_entropy]
+  - [intervention_support, base_contextual_support]
+  - [intervention_support, mean_contextual_support]
+  - [intervention_support, max_contextual_support]
+  - [max_contextual_support, base_contextual_support]
+  - [mean_contextual_support, base_contextual_support]

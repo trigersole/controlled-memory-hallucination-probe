@@ -11,7 +11,7 @@ from .config import output_dir
 from .versioning import artifact_metadata
 
 
-RANK_GATE_SCHEMA_VERSION = 2
+RANK_GATE_SCHEMA_VERSION = 3
 
 
 def load_cross_model_rank_gate_config(path: str | Path) -> dict[str, Any]:
@@ -19,9 +19,10 @@ def load_cross_model_rank_gate_config(path: str | Path) -> dict[str, Any]:
         settings = yaml.safe_load(handle)
     if not isinstance(settings, dict):
         raise ValueError("Cross-model rank-gate configuration must be a mapping")
-    if int(settings.get("cross_model_rank_gate_schema_version", -1)) != RANK_GATE_SCHEMA_VERSION:
+    schema_version = int(settings.get("cross_model_rank_gate_schema_version", -1))
+    if schema_version not in {2, RANK_GATE_SCHEMA_VERSION}:
         raise ValueError(
-            f"cross_model_rank_gate_schema_version must be {RANK_GATE_SCHEMA_VERSION}"
+            f"cross_model_rank_gate_schema_version must be 2 or {RANK_GATE_SCHEMA_VERSION}"
         )
     if int(settings.get("source_support_version", -1)) != 3:
         raise ValueError("source_support_version must be 3")
@@ -33,6 +34,13 @@ def load_cross_model_rank_gate_config(path: str | Path) -> dict[str, Any]:
     if int(settings.get("bootstrap_samples", 0)) <= 0:
         raise ValueError("bootstrap_samples must be positive")
     int(settings["seed"])
+    comparisons = settings.get("paired_comparisons", [])
+    if schema_version == RANK_GATE_SCHEMA_VERSION:
+        if not isinstance(comparisons, list) or not comparisons:
+            raise ValueError("paired_comparisons must be a non-empty list for schema v3")
+        for comparison in comparisons:
+            if not isinstance(comparison, list) or len(comparison) != 2:
+                raise ValueError("Each paired comparison must be [left_method, right_method]")
     return settings
 
 
@@ -144,6 +152,7 @@ def _cluster_bootstrap_methods(
     samples: int,
     seed: int,
     proposed: str,
+    comparisons: list[tuple[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     cluster_indices: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
@@ -163,10 +172,17 @@ def _cluster_bootstrap_methods(
         }
         for method in risks
     }
+    legacy_comparison_keys = comparisons is None
+    if comparisons is None:
+        comparisons = [(proposed, baseline) for baseline in risks if baseline != proposed]
+    unknown = sorted({name for pair in comparisons for name in pair} - set(risks))
+    if unknown:
+        raise ValueError(f"Paired comparisons reference unknown methods: {unknown}")
     differences = {
-        baseline: {str(coverage): [] for coverage in coverages}
-        for baseline in risks
-        if baseline != proposed
+        (right if legacy_comparison_keys else f"{left}_minus_{right}"): {
+            str(coverage): [] for coverage in coverages
+        }
+        for left, right in comparisons
     }
     rng = np.random.default_rng(seed)
     for _ in range(samples):
@@ -185,15 +201,16 @@ def _cluster_bootstrap_methods(
                     value = metrics[metric]
                     if np.isfinite(value):
                         draws[method][key][metric].append(float(value))
-        for baseline in differences:
+        for left, right in comparisons:
+            comparison = right if legacy_comparison_keys else f"{left}_minus_{right}"
             for coverage in coverages:
                 key = str(coverage)
                 delta = (
-                    sample_metrics[proposed][key]["selective_accuracy"]
-                    - sample_metrics[baseline][key]["selective_accuracy"]
+                    sample_metrics[left][key]["selective_accuracy"]
+                    - sample_metrics[right][key]["selective_accuracy"]
                 )
                 if np.isfinite(delta):
-                    differences[baseline][key].append(float(delta))
+                    differences[comparison][key].append(float(delta))
 
     def interval(values: list[float]) -> list[float]:
         if not values:
@@ -274,6 +291,12 @@ def _evaluate_dataset(
     labels = np.asarray([row["correct"] for row in rows], dtype=int)
     risks = _risk_methods(rows, names, matrix, source_report)
     coverages = [float(value) for value in settings["coverages"]]
+    configured = settings.get("paired_comparisons")
+    comparisons = (
+        [tuple(pair) for pair in configured]
+        if configured
+        else [("intervention_support", name) for name in risks if name != "intervention_support"]
+    )
     intervals, differences = _cluster_bootstrap_methods(
         rows,
         labels,
@@ -282,6 +305,7 @@ def _evaluate_dataset(
         int(settings["bootstrap_samples"]),
         int(settings["seed"]) + seed_offset,
         "intervention_support",
+        comparisons,
     )
     methods = {}
     for method, risk in risks.items():
@@ -300,25 +324,26 @@ def _evaluate_dataset(
             "coverage_gates": point,
         }
     paired = {}
-    proposed = methods["intervention_support"]
-    for baseline, by_coverage in differences.items():
-        paired[baseline] = {}
+    for left, right in comparisons:
+        comparison = f"{left}_minus_{right}"
+        paired[comparison] = {"left": left, "right": right, "coverages": {}}
+        by_coverage = differences[comparison]
         for coverage, interval in by_coverage.items():
-            proposed_accuracy = proposed["coverage_gates"][coverage][
+            left_accuracy = methods[left]["coverage_gates"][coverage][
                 "selective_accuracy"
             ]
-            baseline_accuracy = methods[baseline]["coverage_gates"][coverage][
+            right_accuracy = methods[right]["coverage_gates"][coverage][
                 "selective_accuracy"
             ]
-            paired[baseline][coverage] = {
+            paired[comparison]["coverages"][coverage] = {
                 "selective_accuracy_difference": float(
-                    proposed_accuracy - baseline_accuracy
+                    left_accuracy - right_accuracy
                 ),
                 "ci95": interval,
             }
     return {
         "methods": methods,
-        "paired_intervention_minus_baseline": paired,
+        "paired_method_differences": paired,
     }
 
 
@@ -356,26 +381,25 @@ def _markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Paired intervention-support differences",
+            "## Paired method differences",
             "",
-            "Positive values favour the selected LoRA-intervention detector.",
+            "Positive values favour the method in the `Left method` column.",
             "",
-            "| Evaluation | Baseline | Coverage | Selective-accuracy difference | 95% CI |",
-            "|---|---|---:|---:|---:|",
+            "| Evaluation | Left method | Right method | Coverage | Selective-accuracy difference | 95% CI |",
+            "|---|---|---|---:|---:|---:|",
         ]
     )
     for dataset, result in report["evaluations"].items():
-        for baseline, comparisons in result[
-            "paired_intervention_minus_baseline"
-        ].items():
-            for coverage, comparison in comparisons.items():
-                interval = comparison["ci95"]
+        for comparison in result["paired_method_differences"].values():
+            for coverage, metrics in comparison["coverages"].items():
+                interval = metrics["ci95"]
                 lines.append(
-                    "| {} | {} | {:.0%} | {:.4f} | [{:.4f}, {:.4f}] |".format(
+                    "| {} | {} | {} | {:.0%} | {:.4f} | [{:.4f}, {:.4f}] |".format(
                         dataset,
-                        baseline,
+                        comparison["left"],
+                        comparison["right"],
                         float(coverage),
-                        comparison["selective_accuracy_difference"],
+                        metrics["selective_accuracy_difference"],
                         interval[0],
                         interval[1],
                     )
@@ -410,7 +434,7 @@ def analyze_cross_model_rank_gate(
         raise RuntimeError(
             f"Rank gate expects support v{expected_version}, code provides v{SCHEMA_VERSION}"
         )
-    source_root = cross_model_support_root(config)
+    source_root = cross_model_support_root(config, support_settings)
     source_report_path = source_root / "results" / "report.json"
     if not source_report_path.is_file():
         raise FileNotFoundError(f"Missing completed v3 support report: {source_report_path}")
@@ -419,7 +443,8 @@ def analyze_cross_model_rank_gate(
     if source_report.get("method") != f"cross_model_support_v{expected_version}":
         raise RuntimeError("The saved support report has an incompatible method version")
 
-    target = source_root / f"rank_gate_v{RANK_GATE_SCHEMA_VERSION}"
+    rank_version = int(rank_settings["cross_model_rank_gate_schema_version"])
+    target = source_root / f"rank_gate_v{rank_version}"
     report_path = target / "report.json"
     if report_path.exists() and not force:
         return report_path
@@ -450,8 +475,9 @@ def analyze_cross_model_rank_gate(
             100 + index,
         )
     report = {
-        "method": f"cross_model_rank_gate_v{RANK_GATE_SCHEMA_VERSION}",
+        "method": f"cross_model_rank_gate_v{rank_version}",
         "source_method": source_report["method"],
+        "source_controls": source_report.get("controls"),
         "coverages_fixed_before_evaluation": rank_settings["coverages"],
         "bootstrap_unit": "entity_id",
         "bootstrap_samples": int(rank_settings["bootstrap_samples"]),

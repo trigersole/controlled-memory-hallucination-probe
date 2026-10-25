@@ -489,3 +489,55 @@ The report compares the selected intervention detector against token entropy, to
 base-only contextual support, and mean/max base–A–B contextual support using paired bootstrap
 differences. Results are written to
 `outputs/<experiment>/analysis/cross_model_support_v3/rank_gate_v2/report.md`.
+
+### Max-versus-base significance and hard-control audit
+
+The pairwise v3 rank report adds a predeclared entity-bootstrap comparison of maximum base/A/B
+contextual support against base-only contextual support. It reuses the completed v3 features and
+does not run model inference:
+
+```bash
+sbatch slurm/cross_model_rank_gate.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/cross_model_support.yaml \
+  configs/cross_model_rank_gate_pairwise.yaml
+```
+
+Results are isolated under
+`outputs/<experiment>/analysis/cross_model_support_v3/rank_gate_v3/`.
+
+To test whether contextual support only works against easy random controls, run the separate
+hard-control configuration. It uses eight controls chosen as the lexically nearest questions among
+a deterministic pool of 256 questions from the same dataset, split, and relation. It neither
+overwrites nor reuses the original support shards:
+
+```bash
+sbatch slurm/cross_model_support.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/cross_model_support_hard_controls.yaml
+```
+
+Then evaluate its fixed-coverage rankings and paired differences:
+
+```bash
+sbatch slurm/cross_model_rank_gate.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml \
+  configs/cross_model_support_hard_controls.yaml \
+  configs/cross_model_rank_gate_pairwise.yaml
+```
+
+The hard-control artifacts are written under
+`outputs/<experiment>/analysis/cross_model_support_v3_hard_controls/`. The hard-control support job
+is resumable by evaluator and shard, but requires new teacher-forced scoring because the control
+questions differ.
+
+Alternatively, submit the complete resumable audit as one SLURM job:
+
+```bash
+sbatch slurm/contextual_support_audit.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml
+```
+
+This first computes the max-versus-base comparison from the existing control run, then performs the
+isolated hard-control base/A/B replays, selection, and paired rank analysis. The job requeues near
+the time limit and resumes from completed evaluator shards.

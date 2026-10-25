@@ -1,0 +1,36 @@
+cross_model_support_schema_version: 3
+artifact_name: hard_controls
+
+datasets: [synthetic, trivia_qa]
+synthetic_candidate_sources: [adapter_a, adapter_b]
+
+batch_size: 2
+shard_size: 200
+max_sequence_length: 256
+max_answer_tokens: 32
+
+# Eight nearest questions from the same dataset/split/relation. This is a harder
+# label-free control than the two hash-selected questions used by the original run.
+control_repeats: 8
+control_selection: lexical_nearest
+control_search_pool: 256
+
+feature_sets:
+  base_only: [base_support]
+  mean_only: [mean_support]
+  minimum_only: [min_support]
+  maximum_only: [max_support]
+  common_support: [mean_support, min_support, max_support, support_std]
+  intervention_support:
+    - base_support
+    - adapter_a_support
+    - adapter_b_support
+    - mean_support
+    - min_support
+    - max_support
+    - support_std
+    - common_lora_shift
+    - adapter_opposition
+regularization_candidates: [0.01, 0.1, 1.0, 10.0]
+max_source_identity_auroc: 0.60
+seed: 73737

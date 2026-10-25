@@ -70,3 +70,22 @@ def test_paired_bootstrap_detects_better_selective_ranking():
         "intervention_support",
     )
     assert differences["baseline"]["0.5"][0] > 0
+
+
+def test_paired_bootstrap_supports_explicit_method_comparison():
+    rows = [{"entity_id": str(index)} for index in range(20)]
+    labels = np.asarray([1] * 10 + [0] * 10)
+    maximum = np.asarray([0.1] * 10 + [0.9] * 10)
+    base = np.asarray([0.9, 0.1] * 10)
+    _, differences = _cluster_bootstrap_methods(
+        rows,
+        labels,
+        {"max_contextual_support": maximum, "base_contextual_support": base},
+        [0.5],
+        100,
+        7,
+        "max_contextual_support",
+        [("max_contextual_support", "base_contextual_support")],
+    )
+    comparison = differences["max_contextual_support_minus_base_contextual_support"]
+    assert comparison["0.5"][0] > 0

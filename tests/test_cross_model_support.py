@@ -49,6 +49,56 @@ def test_duplicate_candidate_sources_do_not_duplicate_control_questions():
     assert all(len(set(row["control_questions"])) == 2 for row in assigned)
 
 
+def test_lexical_nearest_controls_prefer_similar_questions():
+    rows = [
+        {
+            "candidate_id": f"row-{index}",
+            "fact_id": f"fact-{index}",
+            "dataset": "synthetic",
+            "split": "test",
+            "relation": "occupation",
+            "answer": "unused",
+            "expected": "unused",
+            "question": question,
+        }
+        for index, question in enumerate(
+            (
+                "What occupation does Alice Smith have?",
+                "What occupation does Alice Jones have?",
+                "Where was Bob Brown born?",
+            )
+        )
+    ]
+    first = _assign_control_questions(rows, repeats=1, seed=7, selection="lexical_nearest")
+    second = _assign_control_questions(rows, repeats=1, seed=7, selection="lexical_nearest")
+    assert first == second
+    assert first[0]["control_questions"] == ["What occupation does Alice Jones have?"]
+
+
+def test_lexical_controls_match_across_candidate_sources():
+    rows = [
+        {
+            "candidate_id": f"synthetic:{source}:{fact}",
+            "fact_id": fact,
+            "dataset": "synthetic",
+            "split": "test",
+            "relation": "occupation",
+            "answer": source,
+            "expected": "unused",
+            "question": f"What occupation does {fact} have?",
+        }
+        for fact in ("Alice", "Bob", "Carol")
+        for source in ("adapter_a", "adapter_b")
+    ]
+    assigned = _assign_control_questions(
+        rows, repeats=1, seed=7, selection="lexical_nearest"
+    )
+    by_fact = {}
+    for row in assigned:
+        by_fact.setdefault(row["fact_id"], []).append(row["control_questions"])
+    assert all(controls[0] == controls[1] for controls in by_fact.values())
+
+
 def test_feature_table_builds_common_and_intervention_scores():
     row = {
         "scores": {
