@@ -485,5 +485,7 @@ sbatch slurm/cross_model_rank_gate.sbatch \
   configs/cross_model_rank_gate.yaml
 ```
 
-Results are written to
-`outputs/<experiment>/analysis/cross_model_support_v3/rank_gate_v1/report.md`.
+The report compares the selected intervention detector against token entropy, token log-probability,
+base-only contextual support, and mean/max base–A–B contextual support using paired bootstrap
+differences. Results are written to
+`outputs/<experiment>/analysis/cross_model_support_v3/rank_gate_v2/report.md`.

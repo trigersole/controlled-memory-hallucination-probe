@@ -2,6 +2,7 @@ import numpy as np
 
 from peft_probe.cross_model_rank_gate import (
     _cluster_bootstrap_coverages,
+    _cluster_bootstrap_methods,
     _correct_probability,
     _coverage_metrics,
     _rank_percentiles,
@@ -52,3 +53,20 @@ def test_saved_logistic_model_is_applied_without_refitting():
         report, ["base_support"], np.asarray([[-1.0], [1.0]])
     )
     assert probability[0] < 0.5 < probability[1]
+
+
+def test_paired_bootstrap_detects_better_selective_ranking():
+    rows = [{"entity_id": str(index)} for index in range(20)]
+    labels = np.asarray([1] * 10 + [0] * 10)
+    proposed = np.asarray([0.1] * 10 + [0.9] * 10)
+    baseline = np.asarray([0.9, 0.1] * 10)
+    _, differences = _cluster_bootstrap_methods(
+        rows,
+        labels,
+        {"intervention_support": proposed, "baseline": baseline},
+        [0.5],
+        100,
+        7,
+        "intervention_support",
+    )
+    assert differences["baseline"]["0.5"][0] > 0
