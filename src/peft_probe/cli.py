@@ -13,6 +13,12 @@ from .adapter_invariant_subspace import (
     load_adapter_invariant_subspace_config,
 )
 from .adapter_transfer import evaluate_adapter_transfer
+from .base_contextual_transfer import (
+    analyze_popqa_base_support,
+    collect_popqa_base_support,
+    collect_popqa_candidates,
+    load_base_contextual_transfer_config,
+)
 from .benchmark import collect_benchmark, evaluate_benchmark, intervention_report
 from .collect import collect, configured_feature_keys
 from .comparison import (
@@ -93,6 +99,11 @@ def _parser() -> argparse.ArgumentParser:
         "--cross-model-rank-gate-config",
         default="configs/cross_model_rank_gate.yaml",
         help="Fixed-coverage rank-normalized support-gate settings",
+    )
+    parser.add_argument(
+        "--base-contextual-transfer-config",
+        default="configs/popqa_base_contextual_support.yaml",
+        help="Isolated base-only contextual-support transfer settings",
     )
     parser.add_argument(
         "--training-shift-config",
@@ -195,6 +206,18 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "analyze-cross-model-rank-gate",
         help="Evaluate fixed-coverage rank gates without natural-label calibration",
+    )
+    subparsers.add_parser(
+        "collect-popqa-candidates",
+        help="Generate base-model answers for the isolated PopQA transfer test",
+    )
+    subparsers.add_parser(
+        "collect-popqa-base-support",
+        help="Score PopQA answers against hard relation-matched controls",
+    )
+    subparsers.add_parser(
+        "analyze-popqa-base-support",
+        help="Evaluate the label-free base-only contextual-support ranking on PopQA",
     )
     training_shift = subparsers.add_parser(
         "collect-training-shift",
@@ -342,6 +365,21 @@ def main() -> None:
                 force=args.force,
             )
         )
+    elif args.command == "collect-popqa-candidates":
+        settings = load_base_contextual_transfer_config(
+            args.base_contextual_transfer_config
+        )
+        print(collect_popqa_candidates(config, settings, force=args.force))
+    elif args.command == "collect-popqa-base-support":
+        settings = load_base_contextual_transfer_config(
+            args.base_contextual_transfer_config
+        )
+        print(collect_popqa_base_support(config, settings, force=args.force))
+    elif args.command == "analyze-popqa-base-support":
+        settings = load_base_contextual_transfer_config(
+            args.base_contextual_transfer_config
+        )
+        print(analyze_popqa_base_support(config, settings, force=args.force))
     elif args.command == "collect-training-shift":
         settings = load_training_shift_config(args.training_shift_config)
         print(collect_training_shift(config, settings, args.source, force=args.force))

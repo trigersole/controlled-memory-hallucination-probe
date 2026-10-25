@@ -541,3 +541,20 @@ sbatch slurm/contextual_support_audit.sbatch \
 This first computes the max-versus-base comparison from the existing control run, then performs the
 isolated hard-control base/A/B replays, selection, and paired rank analysis. The job requeues near
 the time limit and resumes from completed evaluator shards.
+
+### Base-only transfer to PopQA
+
+PopQA provides a second natural, open-domain factual QA evaluation with explicit relation and
+subject-popularity metadata. The isolated base-only pipeline generates PopQA answers, scores each
+fixed answer against eight lexically hard questions from the same relation, and reports both the
+overall selective-prediction result and performance by popularity quartile:
+
+```bash
+sbatch slurm/popqa_base_contextual_support.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml
+```
+
+The existing experiment configuration is used only to select the same base model and concise prompt.
+No adapters are loaded, and existing synthetic, TriviaQA, and cross-model artifacts are not changed.
+The job is resumable by stage and atomic shard. Its final report is written to
+`outputs/<experiment>/analysis/base_contextual_transfer_v1/results/pop_qa/report.md`.

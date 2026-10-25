@@ -1,0 +1,22 @@
+base_contextual_transfer_schema_version: 1
+
+dataset: pop_qa
+dataset_name: akariasai/PopQA
+split: test
+max_examples: null
+
+generation_batch_size: 4
+score_batch_size: 2
+shard_size: 200
+max_new_tokens: 24
+max_sequence_length: 256
+max_answer_tokens: 32
+
+# Hard, label-free controls selected from the same PopQA relation.
+control_repeats: 8
+control_search_pool: 256
+
+# Fixed before examining PopQA labels.
+coverages: [0.10, 0.25, 0.50]
+bootstrap_samples: 2000
+seed: 95959
