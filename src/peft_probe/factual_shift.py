@@ -131,6 +131,23 @@ def _digest(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
 
+def deduplicate_questions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse evidence repeats before splitting, preserving accepted aliases."""
+    unique: dict[str, dict[str, Any]] = {}
+    for row in items:
+        fact_id = row["fact_id"]
+        if fact_id not in unique:
+            unique[fact_id] = {**row, "aliases": list(row["aliases"])}
+            continue
+        previous = unique[fact_id]
+        if _normal(previous["question"]) != _normal(row["question"]) or _normal(
+            previous["answer"]
+        ) != _normal(row["answer"]):
+            raise ValueError(f"Conflicting TriviaQA records for question ID {fact_id!r}")
+        previous["aliases"] = list(dict.fromkeys([*previous["aliases"], *row["aliases"]]))
+    return list(unique.values())
+
+
 def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int) -> list[dict]:
     """Keep duplicate questions and transitively overlapping answer aliases together.
 
@@ -195,15 +212,15 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
             continue
         items.append(
             {
-                "fact_id": str(row.get("question_id", f"trivia_{i}")),
+                "fact_id": str(row.get("question_id") or f"trivia_{i}"),
                 "question": row["question"],
                 "answer": aliases[0],
                 "aliases": aliases,
                 "benchmark": "trivia_qa",
             }
         )
-    if len({r["fact_id"] for r in items}) != len(items):
-        raise ValueError("Dataset has duplicate question IDs")
+    input_rows = len(items)
+    items = deduplicate_questions(items)
     rows = split_rows(items, settings["split_sizes"], int(config["experiment"]["seed"]))
     if int(settings.get("ood_max_examples", 0)):
         questions = {_normal(r["question"]) for r in rows}
@@ -234,7 +251,16 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
         if not count:
             raise ValueError("No eligible OOD examples")
     atomic_jsonl(target / "rows.jsonl", rows)
-    _complete(target, {"rows_sha256": _digest(rows), "num_rows": len(rows)})
+    _complete(
+        target,
+        {
+            "rows_sha256": _digest(rows),
+            "num_rows": len(rows),
+            "trivia_input_rows": input_rows,
+            "trivia_unique_questions": len(items),
+            "trivia_duplicate_rows_collapsed": input_rows - len(items),
+        },
+    )
     return target
 
 

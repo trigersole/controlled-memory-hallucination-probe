@@ -35,7 +35,10 @@ the job. Restart the same command after an ordinary interruption.
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized
-question-group order. Normalized duplicate questions and transitively shared answer
+question-group order. Repeated evidence rows with the same question ID are collapsed
+before splitting, merging answer aliases. Conflicting questions or canonical answers
+under the same ID are rejected. Preparation metadata records the deduplication counts.
+Normalized duplicate questions and transitively shared answer
 aliases cannot cross subsets. Exact sizes are honored by discarding excess members
 of a group rather than splitting that group. This is conservative observable
 deduplication, not a guarantee against every semantic paraphrase or pretraining leak.

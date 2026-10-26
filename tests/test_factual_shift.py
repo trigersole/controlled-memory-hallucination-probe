@@ -42,6 +42,38 @@ def test_alias_connected_groups_cannot_cross_splits():
     )
 
 
+def test_repeated_question_ids_collapse_and_preserve_aliases():
+    first = {
+        "fact_id": "q1",
+        "question": "Who wrote Hamlet?",
+        "answer": "Shakespeare",
+        "aliases": ["Shakespeare", "William Shakespeare"],
+    }
+    repeat = {
+        **first,
+        "question": "Who wrote Hamlet? ",
+        "aliases": ["Shakespeare", "W. Shakespeare"],
+    }
+    rows = [first, repeat, {**first, "fact_id": "q2"}]
+    unique = fs.deduplicate_questions(rows)
+    assert [r["fact_id"] for r in unique] == ["q1", "q2"]
+    assert unique[0]["aliases"] == ["Shakespeare", "William Shakespeare", "W. Shakespeare"]
+    assert first["aliases"] == ["Shakespeare", "William Shakespeare"]
+    assert unique == fs.deduplicate_questions(rows)
+
+
+@pytest.mark.parametrize("change", [{"question": "Who wrote Macbeth?"}, {"answer": "Marlowe"}])
+def test_reused_question_id_with_conflicting_content_fails(change):
+    first = {
+        "fact_id": "q1",
+        "question": "Who wrote Hamlet?",
+        "answer": "Shakespeare",
+        "aliases": ["Shakespeare"],
+    }
+    with pytest.raises(ValueError, match="Conflicting TriviaQA records.*q1"):
+        fs.deduplicate_questions([first, {**first, **change}])
+
+
 def test_uncentered_svd_retains_constant_mean_shift():
     base = np.zeros((20, 4))
     adapted = base + np.array([0, 3, 0, 0])
@@ -237,7 +269,9 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
         }
         for i in range(60)
     ]
-    monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs: items)
+    # rc.nocontext can repeat a question once per evidence source.
+    repeated_items = [row for item in items for row in (item, copy.deepcopy(item))]
+    monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs: repeated_items)
 
     class LocalModel(Model):
         scale = 1
@@ -273,6 +307,12 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
 
     monkeypatch.setattr(peft.PeftModel, "from_pretrained", attach)
     fs.prepare(cfg)
+    prepared = fs._read_data(cfg)
+    assert len(prepared) == len({row["fact_id"] for row in prepared}) == 24
+    metadata = json.loads((fs.root(cfg) / "data" / "_SUCCESS.json").read_text())
+    assert metadata["trivia_input_rows"] == 120
+    assert metadata["trivia_unique_questions"] == 60
+    assert metadata["trivia_duplicate_rows_collapsed"] == 60
     fs.prepare_negatives(cfg)
     for adapter in fs.ADAPTERS:
         fs.train(cfg, adapter)
