@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,8 @@ def _last_valid_checkpoint(checkpoint_dir: Path) -> str | None:
 
 
 class FactDataset(Dataset):
-    def __init__(self, rows: list[dict[str, Any]], tokenizer, max_length: int):
+    def __init__(self, rows: list[dict[str, Any]], tokenizer, max_length: int,
+                 reject_truncation: bool = False):
         self.examples: list[dict[str, torch.Tensor]] = []
         for row in rows:
             for question in row["train_questions"]:
@@ -48,9 +50,11 @@ class FactDataset(Dataset):
                 full = tokenizer(
                     prompt + answer,
                     add_special_tokens=False,
-                    truncation=True,
+                    truncation=not reject_truncation,
                     max_length=max_length,
                 )
+                if reject_truncation and len(full["input_ids"]) > max_length:
+                    raise ValueError("Training input exceeds max_sequence_length; increase it")
                 labels = list(full["input_ids"])
                 masked = min(len(prompt_ids), len(labels))
                 labels[:masked] = [-100] * masked
@@ -97,13 +101,37 @@ def train(config: dict[str, Any], adapter: str, force: bool = False) -> Path:
         return final_dir
 
     seed = int(config["experiment"]["seed"]) + (0 if adapter == "a" else 1)
-    seed_everything(seed)
-    tokenizer = load_tokenizer(config["model"])
     rows = [
         row for row in read_jsonl(root / "data" / "facts.jsonl")
         if row["adapter_assignment"] == adapter
     ]
-    dataset = FactDataset(rows, tokenizer, int(config["model"]["max_sequence_length"]))
+    return train_rows(config, rows, adapter_root, seed, force, adapter)
+
+
+def train_rows(
+    config: dict[str, Any],
+    rows: list[dict[str, Any]],
+    adapter_root: Path,
+    seed: int,
+    force: bool = False,
+    adapter: str = "custom",
+) -> Path:
+    """Train answer-masked QA rows using the existing resumable Trainer setup."""
+    ensure_manifest(adapter_root, config_fingerprint(config), force=force)
+    final_dir = adapter_root / "final"
+    done = final_dir / "_SUCCESS.json"
+    if done.exists() and not force:
+        return final_dir
+    if not rows:
+        raise ValueError("Adapter training requires nonempty rows")
+    if force:
+        done.unlink(missing_ok=True)
+    seed_everything(seed)
+    tokenizer = load_tokenizer(config["model"])
+    dataset = FactDataset(rows, tokenizer, int(config["model"]["max_sequence_length"]),
+                          reject_truncation="factual_shift" in config)
+    if any(not item["labels"][1:].ne(-100).any() for item in dataset):
+        raise ValueError("A training answer was fully truncated; increase max_sequence_length")
     model = load_base_model(config["model"], training=True)
     if bool(getattr(model, "is_loaded_in_4bit", False)):
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
@@ -165,6 +193,7 @@ def train(config: dict[str, Any], adapter: str, force: bool = False) -> Path:
         done,
         {
             "adapter": adapter,
+            "training_run_id": uuid.uuid4().hex,
             "num_facts": len(rows),
             "num_training_examples": len(dataset),
             "config_fingerprint": config_fingerprint(config),

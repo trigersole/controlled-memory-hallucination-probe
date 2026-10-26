@@ -1,5 +1,10 @@
 # Controlled-memory PEFT probe
 
+For the independent **TriviaQA LoRA activation-shift correctness experiment**, see
+[FACTUAL_SHIFT.md](FACTUAL_SHIFT.md). It includes matched correct/incorrect LoRA
+controls, disjoint adapter A/B facts, frozen direction selection, and held-out/OOD
+answer evaluation. Its outputs are isolated from the synthetic experiment below.
+
 This repository implements the pilot experiment discussed in the project chats:
 
 1. Generate fictional facts with known truth values.

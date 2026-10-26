@@ -1,0 +1,49 @@
+experiment:
+  name: trivia_factual_shift
+  seed: 42
+  output_dir: outputs/trivia_factual_shift
+model:
+  name_or_path: Qwen/Qwen2.5-3B-Instruct
+  trust_remote_code: false
+  dtype: bfloat16
+  load_in_4bit: true
+  attn_implementation: sdpa
+  max_sequence_length: 512
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  epochs: 2
+  learning_rate: 0.0002
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  save_steps: 25
+  logging_steps: 5
+factual_shift:
+  schema_version: 1
+  dataset: mandarjoshi/trivia_qa
+  dataset_config: rc.nocontext
+  dataset_split: train
+  # Exact counts; shared normalized questions/answer aliases stay within one split.
+  split_sizes:
+    adapter_a: 500
+    adapter_b: 500
+    direction_fit: 500
+    probe_train: 500
+    validation: 500
+    test: 2000
+  ood_max_examples: 300
+  layers: [-1, -9, -17, -25]
+  representation: answer_last
+  ranks: [1, 4, 8]
+  samples_per_question: 3
+  max_new_tokens: 24
+  temperature: 0.9
+  top_p: 0.95
+  negative_attempts: 8
+  minimum_negative_fraction: 0.5
+  batch_size: 2
+  shard_size: 64
+  coverages: [0.25, 0.5, 0.75, 1.0]
+  bootstrap_samples: 500

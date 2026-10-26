@@ -1,6 +1,7 @@
 outputs/
 data/
 .venv/
+.test-deps/
 __pycache__/
 *.py[cod]
 .pytest_cache/

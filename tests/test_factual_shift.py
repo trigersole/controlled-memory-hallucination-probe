@@ -1,0 +1,296 @@
+import copy
+import json
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
+from peft_probe import factual_shift as fs
+from peft_probe.config import load_config
+
+
+def config(tmp_path):
+    result = load_config("configs/factual_shift_smoke.yaml")
+    result["experiment"]["output_dir"] = str(tmp_path)
+    result["factual_shift"].update(layers=[-1], ranks=[1, 2], bootstrap_samples=5)
+    return result
+
+
+def test_alias_connected_groups_cannot_cross_splits():
+    items = [{"question": f"Question {i}", "aliases": [f"answer {i}"]} for i in range(30)]
+    items[1]["aliases"] = ["answer 0", "bridge"]
+    items[2]["aliases"] = ["bridge"]
+    items[3]["question"] = items[2]["question"]
+    sizes = dict.fromkeys(fs.SPLITS, 2)
+    rows = fs.split_rows(items, sizes, 7)
+    assert rows == fs.split_rows(items, sizes, 7)
+    assert len(rows) == 12
+    assigned = {}
+    for row in rows:
+        for alias in row["aliases"]:
+            assert assigned.setdefault(alias, row["split"]) == row["split"]
+    assert (
+        len(
+            {
+                r["split"]
+                for r in rows
+                if r["question"] in {"Question 0", "Question 1", "Question 2"}
+            }
+        )
+        <= 1
+    )
+
+
+def test_uncentered_svd_retains_constant_mean_shift():
+    base = np.zeros((20, 4))
+    adapted = base + np.array([0, 3, 0, 0])
+    fitted = fs.fit_directions(base, adapted, [1], 42)
+    assert abs(fitted["basis"][1, 0]) == pytest.approx(1)
+    assert fitted["energy_fraction"][0] == pytest.approx(1)
+    scores = fs.direction_scores(adapted, fitted, [1])
+    assert scores["energy_1"] == pytest.approx(np.full(20, 9))
+    with pytest.raises(ValueError, match="zero"):
+        fs.fit_directions(base, base, [1], 42)
+
+
+def test_validation_orientation_is_frozen_on_test():
+    sign = fs.orient(np.array([0, 1]), np.array([2.0, -2.0]))
+    assert sign == -1
+    # A genuinely reversed test relationship must remain poor, not be flipped again.
+    rows = [
+        {"fact_id": str(i), "group_id": str(i), "correct": i, "candidate_index": 0} for i in (0, 1)
+    ]
+    report = fs.evaluate_scores(rows, sign * np.array([-2.0, 2.0]), [0.5], 5, 1)
+    assert report["auroc"] == 0
+
+
+def test_candidate_reranking_groups_by_question_and_keeps_ambiguous_outputs_visible():
+    rows = [
+        {
+            "fact_id": str(i // 2),
+            "group_id": str(i // 2),
+            "correct": label,
+            "candidate_index": i % 2,
+        }
+        for i, label in enumerate([0, 1, 1, 0, -1, -1])
+    ]
+    report = fs.evaluate_scores(rows, np.array([0, 1, 1, 0, 2, 3]), [0.5, 1.0], 5, 1)
+    assert report["auroc"] == 1
+    assert report["reranked_accuracy"] == 1
+    assert report["reranked_graded_questions"] == 2
+    assert report["greedy_accuracy"] == 0.5
+    assert report["n_graded"] == 4
+
+
+class Tokenizer:
+    pad_token_id = 0
+    chat_template = None
+
+    def __call__(self, text, **kwargs):
+        return {"input_ids": [len(token) % 15 + 1 for token in text.split()]}
+
+
+class Model:
+    def parameters(self):
+        yield torch.zeros(1)
+
+    def __call__(self, input_ids, **kwargs):
+        hidden = torch.stack([input_ids.float(), input_ids.float() * 2], dim=-1)
+        logits = torch.zeros(*input_ids.shape, 20)
+        return SimpleNamespace(hidden_states=(hidden,), logits=logits)
+
+
+def test_replay_pools_answer_excludes_padding_and_preserves_float32():
+    rows = [
+        {"question": "Where?", "answer": "red fox", "row_id": "a"},
+        {"question": "Where was the person born?", "answer": "Rome", "row_id": "b"},
+        {"question": "Who?", "answer": "", "row_id": "c"},
+    ]
+    settings = {"layers": [-1], "representation": "answer_last", "max_sequence_length": 100}
+    features, scores = fs.replay(Model(), Tokenizer(), rows, settings)
+    assert features["-1"].dtype == torch.float32
+    assert features["-1"][:2, 0].tolist() == [4, 5]
+    assert scores[:2] == pytest.approx([-np.log(20), -np.log(20)])
+    assert scores[2] == -1e6
+    settings["representation"] = "answer_mean"
+    features, _ = fs.replay(Model(), Tokenizer(), rows, settings)
+    assert features["-1"][0, 0] == 4
+    settings["max_sequence_length"] = 1
+    with pytest.raises(ValueError, match="exceeds"):
+        fs.replay(Model(), Tokenizer(), rows, settings)
+
+
+def test_factual_training_rejects_partial_answer_truncation():
+    from peft_probe.train_adapter import FactDataset
+
+    class TrainingTokenizer(Tokenizer):
+        eos_token = ""
+
+        def __call__(self, text, **kwargs):
+            ids = super().__call__(text)["input_ids"]
+            return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+    with pytest.raises(ValueError, match="Training input exceeds"):
+        FactDataset(
+            [{"train_questions": ["Who?"], "value": "very long answer here"}],
+            TrainingTokenizer(),
+            5,
+            reject_truncation=True,
+        )
+
+
+def test_stage_refuses_stale_prerequisites_and_removes_success_before_force(tmp_path):
+    cfg = config(tmp_path)
+    data = fs._stage(cfg, "data")
+    fs._complete(data, {})
+    candidates = fs._stage(cfg, "candidates")
+    fs._complete(candidates, {})
+    fs._complete(data, {})
+    with pytest.raises(RuntimeError, match="Configuration changed"):
+        fs._stage(cfg, "candidates")
+    fs._stage(cfg, "candidates", force=True)
+    assert not (candidates / "_SUCCESS.json").exists()
+
+
+def _fake_corpus(tmp_path):
+    cfg = config(tmp_path)
+    rows = []
+    for split in ("direction_fit", "probe_train", "validation", "test", "ood"):
+        for i in range(8):
+            rows.append(
+                {
+                    "row_id": f"{split}-{i}",
+                    "fact_id": f"{split}-{i // 2}",
+                    "group_id": f"{split}-{i // 2}",
+                    "candidate_index": i % 2,
+                    "correct": i % 2,
+                    "split": split,
+                    "question": "Q",
+                    "answer": "A",
+                }
+            )
+    rng = np.random.default_rng(11)
+    base = rng.normal(size=(len(rows), 5)).astype(np.float32)
+    base[:, 0] += np.array([r["correct"] * 4 for r in rows])
+    loaded = {}
+    for source in fs.SOURCES:
+        delta = np.zeros_like(base)
+        if source != "base":
+            delta[:, 0] = 2 * base[:, 0] * (-1 if source == "incorrect" else 1)
+        loaded[source] = ({"-1": base + delta}, base[:, 0].copy())
+    return cfg, rows, loaded
+
+
+def test_analysis_pipeline_freezes_selection_and_test_label_changes_cannot_affect_it(
+    tmp_path, monkeypatch
+):
+    cfg, rows, loaded = _fake_corpus(tmp_path)
+    monkeypatch.setattr(fs, "_replay_rows", lambda config: rows)
+    monkeypatch.setattr(fs, "load_features", lambda config, r, source: loaded[source])
+    monkeypatch.setattr(fs, "_stage", lambda config, name, force=False: tmp_path)
+    result = fs.analyze(cfg)
+    report = json.loads((result / "metrics.json").read_text())
+    assert "/correct_a/" in report["selected_on_validation"]
+    assert any("a_to_b" in key for key in report["methods"])
+    selected = report["selected_on_validation"]
+    assert report["methods"][selected]["test"]["auroc"] > 0.9
+    for row in rows:
+        if row["split"] in {"test", "ood"}:
+            row["correct"] = 1 - row["correct"]
+    fs.analyze(cfg, force=True)
+    changed = json.loads((result / "metrics.json").read_text())
+    assert changed["selected_on_validation"] == selected
+    assert changed["methods"][selected]["orientation"] == report["methods"][selected]["orientation"]
+    assert changed["methods"][selected]["test"]["auroc"] < 0.1
+
+
+def test_config_validation_checks_sampling_and_split_budget(tmp_path):
+    cfg = config(tmp_path)
+    assert fs.validate(cfg)
+    bad = copy.deepcopy(cfg)
+    bad["factual_shift"]["split_sizes"]["direction_fit"] = 1
+    with pytest.raises(ValueError, match="largest requested rank"):
+        fs.validate(bad)
+
+
+def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch):
+    """Exercise preparation -> matched training -> candidates -> four replays -> report."""
+    import datasets
+    import peft
+
+    from peft_probe import train_adapter
+
+    cfg = config(tmp_path)
+    cfg["factual_shift"].update(
+        split_sizes=dict.fromkeys(fs.SPLITS, 4),
+        ood_max_examples=0,
+        negative_attempts=1,
+        samples_per_question=2,
+        bootstrap_samples=2,
+    )
+    items = [
+        {
+            "question_id": f"q{i}",
+            "question": f"Where is {'x' * (i + 1)}?",
+            "answer": {"value": "Z" + "x" * i, "aliases": []},
+        }
+        for i in range(60)
+    ]
+    monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs: items)
+
+    class LocalModel(Model):
+        scale = 1
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args, **kwargs):
+            output = super().__call__(*args, **kwargs)
+            output.hidden_states = tuple(x * self.scale for x in output.hidden_states)
+            return output
+
+    monkeypatch.setattr(fs, "load_base_model", lambda *args, **kwargs: LocalModel())
+    monkeypatch.setattr(fs, "load_tokenizer", lambda *args: Tokenizer())
+    monkeypatch.setattr(
+        fs,
+        "_generate",
+        lambda m, t, rows, s, sample: ["faux city" if sample else r["answer"] for r in rows],
+    )
+    calls = {}
+
+    def local_train(config, rows, adapter_root, seed, force, adapter):
+        calls[adapter] = (rows, seed)
+        target = adapter_root / "final"
+        fs._complete(target, {"adapter": adapter})
+        return target
+
+    monkeypatch.setattr(train_adapter, "train_rows", local_train)
+
+    def attach(model, path, **kwargs):
+        model.scale = {"correct_a": 2, "correct_b": 3, "incorrect": -1}[path.parent.name]
+        return model
+
+    monkeypatch.setattr(peft.PeftModel, "from_pretrained", attach)
+    fs.prepare(cfg)
+    fs.prepare_negatives(cfg)
+    for adapter in fs.ADAPTERS:
+        fs.train(cfg, adapter)
+    assert calls["correct_a"][1] == calls["incorrect"][1]
+    assert [r["train_questions"] for r in calls["correct_a"][0]] == [
+        r["train_questions"] for r in calls["incorrect"][0]
+    ]
+    assert all(r["value"] == "faux city" for r in calls["incorrect"][0])
+    fs.collect_candidates(cfg)
+    for source in fs.SOURCES:
+        fs.collect_features(cfg, source)
+    result = fs.analyze(cfg)
+    assert (result / "_SUCCESS.json").exists()
+    assert (result / "frozen_methods.pt").exists()
+    assert (result / "predictions.jsonl").exists()
+    assert fs.analyze(cfg) == result
+    # A modified answer pool must not silently align with old features.
+    replay_rows = fs._replay_rows(cfg)
+    replay_rows[-1]["answer"] = "changed text"
+    with pytest.raises(ValueError, match="Mismatched replay corpus"):
+        fs.load_features(cfg, replay_rows, "base")

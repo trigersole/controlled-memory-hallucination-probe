@@ -1,0 +1,48 @@
+experiment:
+  name: trivia_factual_shift_smoke
+  seed: 42
+  output_dir: outputs/trivia_factual_shift_smoke
+model:
+  name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  trust_remote_code: false
+  dtype: bfloat16
+  load_in_4bit: true
+  attn_implementation: sdpa
+  max_sequence_length: 512
+lora:
+  rank: 4
+  alpha: 8
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  epochs: 1
+  learning_rate: 0.0002
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 2
+  save_steps: 5
+  logging_steps: 1
+factual_shift:
+  schema_version: 1
+  dataset: mandarjoshi/trivia_qa
+  dataset_config: rc.nocontext
+  dataset_split: train
+  split_sizes:
+    adapter_a: 12
+    adapter_b: 12
+    direction_fit: 12
+    probe_train: 24
+    validation: 24
+    test: 24
+  ood_max_examples: 10
+  layers: [-1, -9]
+  representation: answer_last
+  ranks: [1, 4]
+  samples_per_question: 2
+  max_new_tokens: 24
+  temperature: 0.9
+  top_p: 0.95
+  negative_attempts: 4
+  minimum_negative_fraction: 0.25
+  batch_size: 2
+  shard_size: 12
+  coverages: [0.5, 1.0]
+  bootstrap_samples: 20

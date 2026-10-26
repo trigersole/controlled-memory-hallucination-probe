@@ -28,16 +28,16 @@ from .comparison import (
     load_comparison_config,
 )
 from .confidence_gate import analyze_confidence_gate, load_confidence_gate_config
+from .config import initialize_output, load_config, output_dir, validate_source_run
+from .cross_model_rank_gate import (
+    analyze_cross_model_rank_gate,
+    load_cross_model_rank_gate_config,
+)
 from .cross_model_support import (
     analyze_cross_model_support,
     collect_cross_model_support,
     load_cross_model_support_config,
 )
-from .cross_model_rank_gate import (
-    analyze_cross_model_rank_gate,
-    load_cross_model_rank_gate_config,
-)
-from .config import initialize_output, load_config, output_dir, validate_source_run
 from .geometry import (
     analyze_geometry,
     collect_benchmark_geometry,
@@ -46,8 +46,8 @@ from .geometry import (
 )
 from .memory_subspace import analyze_memory_subspace, load_memory_subspace_config
 from .probe import train_all, train_one
-from .synthetic import generate
 from .summarize import summarize_results
+from .synthetic import generate
 from .train_adapter import train
 from .training_shift import (
     analyze_training_shift,
@@ -230,6 +230,19 @@ def _parser() -> argparse.ArgumentParser:
         "analyze-training-shift",
         help="Compare principal activation and LoRA-minus-base update subspaces",
     )
+    for command, help_text in (
+        ("validate-factual-shift", "Validate the isolated factual LoRA experiment"),
+        ("prepare-factual-shift", "Create independent TriviaQA experiment splits"),
+        ("prepare-factual-shift-negatives", "Sample incorrect-answer control targets"),
+        ("collect-factual-shift-candidates", "Save fixed base-model answer candidates"),
+        ("analyze-factual-shift", "Test whether LoRA update directions predict correctness"),
+        ("run-factual-shift", "Run or resume every factual LoRA experiment stage"),
+    ):
+        subparsers.add_parser(command, help=help_text)
+    factual_train = subparsers.add_parser("train-factual-shift", help="Train one factual/control LoRA")
+    factual_train.add_argument("--adapter", choices=("correct_a", "correct_b", "incorrect"), required=True)
+    factual_collect = subparsers.add_parser("collect-factual-shift", help="Replay fixed text through one model")
+    factual_collect.add_argument("--source", choices=("base", "correct_a", "correct_b", "incorrect"), required=True)
     return parser
 
 
@@ -258,6 +271,37 @@ def _validate(config: dict) -> None:
 def main() -> None:
     args = _parser().parse_args()
     config = load_config(args.config)
+    if "factual-shift" in args.command:
+        from . import factual_shift as factual
+
+        factual.validate(config)
+        initialize_output(config)
+        if args.command == "validate-factual-shift":
+            print(json.dumps({"valid": True, "cuda_available": torch.cuda.is_available(),
+                              "output_dir": str(factual.root(config))}, indent=2))
+        elif args.command == "prepare-factual-shift":
+            print(factual.prepare(config, args.force))
+        elif args.command == "prepare-factual-shift-negatives":
+            print(factual.prepare_negatives(config, args.force))
+        elif args.command == "train-factual-shift":
+            print(factual.train(config, args.adapter, args.force))
+        elif args.command == "collect-factual-shift-candidates":
+            print(factual.collect_candidates(config, args.force))
+        elif args.command == "collect-factual-shift":
+            print(factual.collect_features(config, args.source, args.force))
+        elif args.command == "analyze-factual-shift":
+            print(factual.analyze(config, args.force))
+        else:
+            print(factual.prepare(config, args.force), flush=True)
+            print(factual.prepare_negatives(config, args.force), flush=True)
+            for adapter in factual.ADAPTERS:
+                print(factual.train(config, adapter, args.force), flush=True)
+                factual._release()
+            print(factual.collect_candidates(config, args.force), flush=True)
+            for source in factual.SOURCES:
+                print(factual.collect_features(config, source, args.force), flush=True)
+            print(factual.analyze(config, args.force), flush=True)
+        return
     initialize_output(config)
     if args.command == "validate":
         _validate(config)
