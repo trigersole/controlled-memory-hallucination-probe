@@ -556,5 +556,13 @@ sbatch slurm/popqa_base_contextual_support.sbatch \
 
 The existing experiment configuration is used only to select the same base model and concise prompt.
 No adapters are loaded, and existing synthetic, TriviaQA, and cross-model artifacts are not changed.
-The job is resumable by stage and atomic shard. Its final report is written to
-`outputs/<experiment>/analysis/base_contextual_transfer_v1/results/pop_qa/report.md`.
+The job is resumable by stage and atomic shard. Its final report uses PopQA's normalized-alias
+containment (golden-match) grading and is written to
+`outputs/<experiment>/analysis/base_contextual_transfer_v1/results/pop_qa/golden_match_report.md`.
+
+Runs completed before golden-match grading was added can be regraded without model inference:
+
+```bash
+sbatch slurm/popqa_regrade.sbatch \
+  configs/pilot_llama2_concise_prompts.yaml
+```

@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,20 @@ def _parse_aliases(value: Any) -> list[str]:
     return list(dict.fromkeys(str(item).strip() for item in parsed if str(item).strip()))
 
 
+def _grade_popqa(answer: str, aliases: list[str]) -> tuple[int, str]:
+    """PopQA golden match: a normalized gold alias occurs in the generation."""
+    def official_normalize(text: str) -> str:
+        normalized = text.casefold().replace("’", "'")
+        normalized = re.sub(r"[^\w\s]", " ", normalized)
+        normalized = " ".join(normalized.split())
+        return " ".join(re.sub(r"\b(a|an|the)\b", " ", normalized).split())
+
+    prediction = official_normalize(answer)
+    accepted = [official_normalize(alias) for alias in aliases]
+    correct = any(alias and f" {alias} " in f" {prediction} " for alias in accepted)
+    return int(correct), "popqa_normalized_alias_containment"
+
+
 def _prepare_popqa(config: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     from datasets import load_dataset
 
@@ -127,7 +142,6 @@ def _prepare_popqa(config: dict[str, Any], settings: dict[str, Any]) -> list[dic
 def collect_popqa_candidates(
     config: dict[str, Any], settings: dict[str, Any], force: bool = False
 ) -> Path:
-    from .benchmark import _grade_trivia
     from .collect import _batch_generate_and_extract
     from .io_utils import (
         atomic_torch_save,
@@ -167,7 +181,7 @@ def collect_popqa_candidates(
             for original, record in zip(batch_rows, generated, strict=True):
                 if not str(record["answer"]).strip() or int(record["answer_tokens"]) <= 0:
                     continue
-                correct, status = _grade_trivia(record["answer"], original["aliases"])
+                correct, status = _grade_popqa(record["answer"], original["aliases"])
                 records.append(
                     {
                         **record,
@@ -455,10 +469,18 @@ def analyze_popqa_base_support(
 
     root = base_contextual_transfer_root(config)
     target = root / "results" / DATASET
-    report_path = target / "report.json"
+    report_path = target / "golden_match_report.json"
     if report_path.exists() and not force:
         return report_path
     rows = _load_records(root / "support" / DATASET)
+    rows = [
+        {
+            **row,
+            "correct": _grade_popqa(str(row["answer"]), list(row["aliases"]))[0],
+            "grading_status": "popqa_normalized_alias_containment",
+        }
+        for row in rows
+    ]
     labels = np.asarray([int(row["correct"]) for row in rows])
     strata = {}
     for name, group in _popularity_groups(rows).items():
@@ -472,6 +494,7 @@ def analyze_popqa_base_support(
     report = {
         "method": f"base_contextual_transfer_v{SCHEMA_VERSION}",
         "dataset": DATASET,
+        "grading": "popqa_normalized_alias_containment",
         "n": len(rows),
         "answer_accuracy": float(labels.mean()),
         "controls": {
@@ -485,5 +508,7 @@ def analyze_popqa_base_support(
         **artifact_metadata(),
     }
     atomic_json(report_path, report)
-    (target / "report.md").write_text(_markdown(report), encoding="utf-8")
+    (target / "golden_match_report.md").write_text(
+        _markdown(report), encoding="utf-8"
+    )
     return report_path
