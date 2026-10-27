@@ -15,6 +15,11 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 CONFIG=${1:-configs/factual_shift.yaml}
+COMMAND=${2:-run-factual-shift}
+if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" ]]; then
+  echo "Expected run-factual-shift or analyze-factual-shift as the second argument." >&2
+  exit 2
+fi
 HALOSCOPE_DIR=${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}
 DEFAULT_PYTHON="$PWD/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON" ]]; then
@@ -26,6 +31,10 @@ export PYTHONPATH="$PWD/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+export NUMEXPR_NUM_THREADS=$OMP_NUM_THREADS
 mkdir -p slurm/logs
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -59,6 +68,13 @@ requeue_current() {
 }
 trap requeue_current USR1
 
-"$PYTHON_BIN" -m peft_probe --config "$CONFIG" run-factual-shift &
+echo "Starting $COMMAND with config $CONFIG"
+"$PYTHON_BIN" -m peft_probe --config "$CONFIG" "$COMMAND" &
 CHILD_PID=$!
-wait "$CHILD_PID"
+if wait "$CHILD_PID"; then
+  echo "$COMMAND completed successfully."
+else
+  STATUS=$?
+  echo "$COMMAND failed with exit code $STATUS; see analysis_progress.json and analysis_failure.json in results/." >&2
+  exit "$STATUS"
+fi

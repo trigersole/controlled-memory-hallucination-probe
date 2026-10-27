@@ -246,6 +246,51 @@ def test_config_validation_checks_sampling_and_split_budget(tmp_path):
         fs.validate(bad)
 
 
+def test_interrupted_analysis_resumes_fits_and_completed_methods(tmp_path, monkeypatch):
+    cfg, rows, loaded = _fake_corpus(tmp_path)
+    monkeypatch.setattr(fs, "_replay_rows", lambda config: rows)
+    monkeypatch.setattr(fs, "load_features", lambda config, r, source: loaded[source])
+    monkeypatch.setattr(fs, "_stage", lambda config, name, force=False: tmp_path)
+    evaluate = fs.evaluate_scores
+    calls = 0
+
+    def interrupted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("simulated interrupted bootstrap")
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(fs, "evaluate_scores", interrupted)
+    with pytest.raises(RuntimeError, match="simulated interrupted bootstrap"):
+        fs.analyze(cfg)
+    assert (tmp_path / "analysis_fit.pt").exists()
+    saved = json.loads((tmp_path / "analysis_metrics_checkpoint.json").read_text())
+    assert list(saved["methods"]) == ["base_likelihood"]
+    failure = json.loads((tmp_path / "analysis_failure.json").read_text())
+    assert failure["error_type"] == "RuntimeError"
+    assert "simulated interrupted bootstrap" in failure["traceback"]
+    assert not (tmp_path / "_SUCCESS.json").exists()
+    monkeypatch.setattr(fs, "evaluate_scores", evaluate)
+    monkeypatch.setattr(fs, "_fit_analysis", lambda *args: pytest.fail("Must reuse saved fits"))
+    fs.analyze(cfg)
+    report = json.loads((tmp_path / "metrics.json").read_text())
+    assert report["methods"]["base_likelihood"] == saved["methods"]["base_likelihood"]
+    assert (tmp_path / "summary.md").exists()
+    assert (tmp_path / "_SUCCESS.json").exists()
+    assert not (tmp_path / "analysis_failure.json").exists()
+
+
+def test_analysis_rejects_checkpoint_from_different_replay_text(tmp_path, monkeypatch):
+    cfg, rows, _ = _fake_corpus(tmp_path)
+    monkeypatch.setattr(fs, "_replay_rows", lambda config: rows)
+    monkeypatch.setattr(fs, "_stage", lambda config, name, force=False: tmp_path)
+    torch.save({"signature": {"rows_sha256": "wrong"}, "fitted": {}}, tmp_path / "analysis_fit.pt")
+    with pytest.raises(ValueError, match="checkpoint inputs changed"):
+        fs.analyze(cfg)
+    assert (tmp_path / "analysis_failure.json").exists()
+
+
 def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch):
     """Exercise preparation -> matched training -> candidates -> four replays -> report."""
     import datasets

@@ -9,9 +9,12 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
 import re
 import string
+import traceback
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -733,13 +736,12 @@ def evaluate_scores(
     }
 
 
-def analyze(config: dict, force: bool = False) -> Path:
-    target = _stage(config, "results", force)
-    if (target / "_SUCCESS.json").exists() and not force:
-        return target
+def _fit_analysis(config: dict, rows: list[dict], progress) -> dict:
     settings = validate(config)
-    rows = _replay_rows(config)
-    loaded = {source: load_features(config, rows, source) for source in SOURCES}
+    loaded = {}
+    for source in SOURCES:
+        progress(f"Loading saved features: {source}")
+        loaded[source] = load_features(config, rows, source)
     split = np.asarray([r["split"] for r in rows])
     labels = np.asarray([r["correct"] for r in rows])
     fit_mask, train_mask, val = (
@@ -749,10 +751,15 @@ def analyze(config: dict, force: bool = False) -> Path:
     )
     if len(np.unique(labels[val])) != 2 or len(np.unique(labels[train_mask])) != 2:
         raise ValueError("Probe-training and validation splits each need both correctness classes")
+    progress(
+        f"Fitting on {int(fit_mask.sum())} direction rows; "
+        f"validation has {int(labels[val].sum())}/{int(val.sum())} correct answers"
+    )
     seed = int(config["experiment"]["seed"])
     scores: dict[str, np.ndarray] = {"base_likelihood": loaded["base"][1]}
     transfers, artifacts, diagnostics = {}, {}, {}
     for layer in map(str, settings["layers"]):
+        progress(f"Layer {layer}: fitting update directions")
         base = loaded["base"][0][layer]
         fitted = {}
         for source in ADAPTERS:
@@ -783,6 +790,7 @@ def analyze(config: dict, force: bool = False) -> Path:
             ),
         }
         # Contrast A and its matched incorrect adapter on identical direction-fit text.
+        progress(f"Layer {layer}: fitting contrastive and ordinary PCA controls")
         contrast = fit_directions(
             loaded["incorrect"][0][layer][fit_mask],
             loaded["correct_a"][0][layer][fit_mask],
@@ -817,6 +825,7 @@ def analyze(config: dict, force: bool = False) -> Path:
             StandardScaler(), LogisticRegression(C=1.0, max_iter=1000, random_state=seed)
         )
         # Explicit extra-label baseline; geometry uses no probe_train correctness labels.
+        progress(f"Layer {layer}: fitting supervised probe")
         probe.fit(base[train_mask], labels[train_mask])
         scores[f"{layer}/supervised_probe"] = probe.predict_proba(base)[:, 1]
         artifacts[f"{layer}/supervised_probe"] = probe
@@ -838,27 +847,84 @@ def analyze(config: dict, force: bool = False) -> Path:
     artifacts["selected"] = selected
     artifacts["selected_transfer"] = selected_transfer
     artifacts["selected_by_family"] = selected_by_family
+    return {
+        "artifacts": artifacts,
+        "scores": scores,
+        "transfers": transfers,
+        "validation": validation,
+        "diagnostics": diagnostics,
+    }
+
+
+def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
+    settings = validate(config)
+    progress("Reading saved replay corpus")
+    rows = _replay_rows(config)
+    signature = {
+        "checkpoint_version": 1,
+        "config_fingerprint": config_fingerprint(config),
+        "rows_sha256": _digest(rows),
+    }
+    cache_path = target / "analysis_fit.pt"
+    partial_path = target / "analysis_metrics_checkpoint.json"
+    if force:
+        cache_path.unlink(missing_ok=True)
+        partial_path.unlink(missing_ok=True)
+    if cache_path.exists() and not force:
+        progress("Restoring fitted directions and scores")
+        cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+        if cached["signature"] != signature:
+            raise ValueError(
+                "Analysis checkpoint inputs changed; explicitly rebuild analysis with --force"
+            )
+        fitted = cached["fitted"]
+    else:
+        fitted = _fit_analysis(config, rows, progress)
+        # Feature matrices go out of scope after fitting, before bootstrap evaluation.
+        _release()
+        progress("Saving fitted directions and score checkpoint")
+        atomic_torch_save(cache_path, {"signature": signature, "fitted": fitted})
+    artifacts = fitted["artifacts"]
+    scores, transfers = fitted["scores"], fitted["transfers"]
+    validation, diagnostics = fitted["validation"], fitted["diagnostics"]
+    signs, selected = artifacts["signs"], artifacts["selected"]
+    selected_transfer = artifacts["selected_transfer"]
+    selected_by_family = artifacts["selected_by_family"]
+    seed = int(config["experiment"]["seed"])
+    split = np.asarray([r["split"] for r in rows])
     atomic_torch_save(target / "frozen_methods.pt", artifacts)
     reports, predictions = {}, []
-    for name, raw in scores.items():
+    if partial_path.exists() and not force:
+        saved = json.loads(partial_path.read_text(encoding="utf-8"))
+        if saved["signature"] != signature:
+            raise ValueError(
+                "Analysis metric checkpoint inputs changed; explicitly rebuild analysis with --force"
+            )
+        reports = saved["methods"]
+    progress(f"Evaluating {len(scores)} score methods; {len(reports)} reports already saved")
+    for method_index, (name, raw) in enumerate(scores.items(), start=1):
         variants = {"native": signs[name] * raw}
         if name in transfers:
             variants["a_to_b"] = signs[name] * transfers[name]
         for variant, score in variants.items():
             key = name if variant == "native" else f"{name}/a_to_b"
-            reports[key] = {"validation_auroc": validation[name], "orientation": signs[name]}
-            for dataset in ("test", "ood"):
-                mask = split == dataset
-                if not mask.any():
-                    continue
-                subset = [r for r, include in zip(rows, mask, strict=True) if include]
-                reports[key][dataset] = evaluate_scores(
-                    subset,
-                    score[mask],
-                    settings["coverages"],
-                    int(settings["bootstrap_samples"]),
-                    seed,
-                )
+            if key not in reports:
+                progress(f"Method {method_index}/{len(scores)}: {key}")
+                report = {"validation_auroc": validation[name], "orientation": signs[name]}
+                for dataset in ("test", "ood"):
+                    mask = split == dataset
+                    if not mask.any():
+                        continue
+                    subset = [r for r, include in zip(rows, mask, strict=True) if include]
+                    report[dataset] = evaluate_scores(
+                        subset,
+                        score[mask],
+                        settings["coverages"],
+                        int(settings["bootstrap_samples"]),
+                        seed,
+                    )
+                reports[key] = report
+                atomic_json(partial_path, {"signature": signature, "methods": reports})
             if variant == "native" and name in {selected, "base_likelihood"}:
                 predictions.extend(
                     {
@@ -873,6 +939,7 @@ def analyze(config: dict, force: bool = False) -> Path:
                     for r, s in zip(rows, score, strict=True)
                     if r["split"] in {"test", "ood"}
                 )
+    progress("Writing final metrics, predictions, and summary")
     atomic_json(
         target / "metrics.json",
         {
@@ -922,3 +989,43 @@ def analyze(config: dict, force: bool = False) -> Path:
     (target / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     _complete(target, {"selected": selected})
     return target
+
+
+def analyze(config: dict, force: bool = False) -> Path:
+    """Resume CPU analysis with progress and persistent Python failure diagnostics."""
+    from threadpoolctl import threadpool_limits
+
+    target = _stage(config, "results", force)
+    if (target / "_SUCCESS.json").exists() and not force:
+        return target
+    last_progress = {}
+
+    def progress(message):
+        last_progress.update(timestamp=datetime.now(timezone.utc).isoformat(), stage=message)
+        print(f"[factual-shift analysis] {message}", flush=True)
+        atomic_json(target / "analysis_progress.json", last_progress)
+
+    try:
+        threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+        progress(f"Starting analysis with {threads} CPU threads; saved model stages are reused")
+        with threadpool_limits(limits=threads):
+            result = _analyze_results(config, target, progress, force)
+        progress("Analysis complete: summary.md is ready")
+        (target / "analysis_failure.json").unlink(missing_ok=True)
+        return result
+    except BaseException as exc:
+        detail = traceback.format_exc()
+        print(detail, flush=True)  # Also expose the traceback in the SLURM stdout log.
+        try:
+            atomic_json(
+                target / "analysis_failure.json",
+                {
+                    "last_progress": last_progress,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "traceback": detail,
+                },
+            )
+        except OSError:
+            pass  # Preserve the original exception even when storage is unavailable.
+        raise

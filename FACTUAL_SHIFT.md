@@ -57,6 +57,23 @@ completed outputs, training resumes complete Trainer checkpoints, and generation
 replay resume atomic shards. Wall-time warnings stop the active process and requeue
 the job. Restart the same command after an ordinary interruption.
 
+If the model stages have finished and only the summary is missing, submit analysis
+alone with the original configuration, without `--force`:
+
+```bash
+sbatch slurm/factual_shift.sbatch configs/factual_shift_llama2.yaml analyze-factual-shift
+```
+
+This uses the existing feature files and does not load model weights or train adapters.
+The analysis prints progress for feature loading, layer fitting, and method evaluation.
+`results/analysis_progress.json` records its latest step; ordinary Python failures also
+write `results/analysis_failure.json` with a traceback. A native crash or scheduler
+termination may leave only progress, so the launcher logs the process exit code too.
+Fitted scores and each completed method's metrics are checkpointed, allowing an
+interrupted analysis to resume. Feature matrices are released after fitting, and
+CPU library threads are limited to the allocated CPUs. The final report remains
+`results/summary.md`; intermediate checkpoints are not completed experimental results.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized
