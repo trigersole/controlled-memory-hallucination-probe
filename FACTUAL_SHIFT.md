@@ -203,6 +203,54 @@ validation-calibrated absolute thresholds. Raw scores are not calibrated probabi
 
 ## Outputs and provenance
 
+### Does the score distinguish answers to the same question?
+
+After the original analysis completes, run this CPU-only diagnostic on the saved
+predictions and candidate metadata. The standalone script uses only Python's standard
+library and can run without PyTorch, PEFT, model weights, or a GPU:
+
+```bash
+python scripts/analyze_within_question.py \
+  outputs/factual_shift_llama2/factual_shift_v1/results
+```
+
+If submitting through SLURM, the existing launcher also accepts:
+
+```bash
+sbatch slurm/factual_shift.sbatch configs/factual_shift_llama2.yaml within-question-factual-shift
+```
+
+This launcher retains its normal GPU reservation even though this diagnostic uses
+only the CPU. The direct script avoids that reservation. Its `--bootstrap-samples`
+and `--seed` default to 500 and 42; the experiment CLI uses the existing config values.
+
+The diagnostic keeps the original validation-selected method and saved score sign.
+For each question with both correct and incorrect candidates, it compares all
+correct/incorrect pairs, awarding half credit for ties, then averages equally
+over questions. Questions with no mixed graded candidates are counted but excluded
+from this metric. Ambiguous labels (-1) are excluded from comparisons. Duplicate
+sampled answers retain their sampling multiplicity; pairs are not treated as
+independent observations. Bootstrap resampling preserves entire question/alias
+groups, and comparisons against likelihood use the same draws for paired intervals.
+
+Reports include pooled AUROC, within-question pairwise accuracy, a question-centered
+pooled AUROC, eligible question/cluster counts, and the paired difference against
+likelihood. A question-mean control assigns every answer to a question the same
+mean selected score. Its within-question accuracy must be 0.5 whenever mixed
+questions exist. This control uses saved answer scores; it is not a prompt-only
+activation measurement. High pooled AUROC and near-chance within-question accuracy
+are consistent with a question-level signal, without proving its causal origin.
+
+Outputs are separate from the original report:
+
+- `results/within_question/summary.md`
+- `results/within_question/metrics.json`
+- `results/within_question/per_question.json`
+
+Original predictions, metrics, adapters, and features are not rewritten. Source
+hashes protect against stale report reuse. If intentionally changing diagnostic
+settings, the standalone `--force` rebuilds only `within_question/` reports.
+
 Everything is under `outputs/trivia_factual_shift/factual_shift_v1/`:
 
 - `data/rows.jsonl`: split/group assignments and factual references.
