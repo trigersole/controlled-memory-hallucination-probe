@@ -117,8 +117,11 @@ mkdir -p slurm/logs
 sbatch slurm/factual_study.sbatch configs/factual_confirmation/study.json
 ```
 
-The default array runs three seeds with one active GPU job at a time, preserving the
-existing 32 GB memory and requeue settings. If using `--seeds` with more than three
+The default array runs three seeds with one active GPU job at a time, requesting
+2 CPUs, one GPU, 32 GB memory and 5 hours 50 minutes per allocation (below the
+6-hour limit). CPU library threads follow the 2-CPU allocation. Wall-time warnings
+trigger checkpoint-based requeue/resume; a complete seed may need multiple allocations.
+If using `--seeds` with more than three
 seeds, override `sbatch --array=0-N%1` with N equal to the number of seeds minus one.
 To resume, resubmit the same array/manifest; do not rerun `prepare` or use `--force`.
 Each task executes training, shared-answer replay, analysis and final paired checks.

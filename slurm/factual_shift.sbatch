@@ -2,7 +2,7 @@
 #SBATCH --partition=MGPU-TC2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --time=05:50:00
