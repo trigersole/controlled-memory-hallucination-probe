@@ -70,7 +70,7 @@ def test_frozen_transfer_inherits_a_sign_and_control_retains_its_own_sign():
     assert report["methods"][A]["within_question_pairwise_accuracy"] == 1
     assert report["methods"][TRANSFER]["within_question_pairwise_accuracy"] == 0
     assert report["methods"][INCORRECT]["within_question_pairwise_accuracy"] == 0
-    assert report["paired_comparisons"] == [
+    assert report["paired_comparisons"][:2] == [
         {"left": TRANSFER, "right": A, "mean": -1, "ci95": [-1, -1]},
         {"left": A, "right": INCORRECT, "mean": 1, "ci95": [1, 1]},
     ]
@@ -122,7 +122,7 @@ def test_independent_control_and_matched_geometry_are_both_preserved():
     metrics["methods"][other] = {"orientation": -1}
     _, methods, comparisons, selections = final.frozen_rows(cached, metrics, rows, predictions)
     assert INCORRECT in methods and other in methods
-    assert comparisons == [(TRANSFER, A), (A, other), (A, INCORRECT)]
+    assert comparisons == [(TRANSFER, A), (A, other), (A, INCORRECT), (A, BASELINE)]
     assert selections["incorrect_validation_selected"] == other
 
 

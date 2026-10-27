@@ -76,6 +76,12 @@ def validate(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("coverages must be in (0, 1]")
     if int(settings.get("ood_max_examples", 0)) < 0:
         raise ValueError("ood_max_examples must be nonnegative")
+    if settings.get("ood_candidate_mode", "generated") not in {"generated", "references"}:
+        raise ValueError("ood_candidate_mode must be generated or references")
+    if int(settings.get("ood_references_per_class", 3)) <= 0:
+        raise ValueError("ood_references_per_class must be positive")
+    if settings.get("analysis_report_scope", "all") not in {"all", "confirmatory"}:
+        raise ValueError("analysis_report_scope must be all or confirmatory")
     if not 0 < float(settings["minimum_negative_fraction"]) <= 1:
         raise ValueError("minimum_negative_fraction must be in (0, 1]")
     if int(settings["split_sizes"]["direction_fit"]) < max(ranks):
@@ -446,6 +452,12 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         seed_everything(int(config["experiment"]["seed"]) + shard + 2000)
         records = []
         for _, group in chunks(batch, int(settings["batch_size"])):
+            reference_rows = [r for r in group if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"]
+            for row in reference_rows:
+                records.extend(reference_candidates(row, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"])))
+            group = [r for r in group if r not in reference_rows]
+            if not group:
+                continue
             for sample in range(int(settings["samples_per_question"])):
                 answers = _generate(model, tokenizer, group, settings, sample=sample > 0)
                 for row, answer in zip(group, answers, strict=True):
@@ -465,12 +477,46 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
     _release()
     records = [r for p in sorted(target.glob("shard_*.jsonl")) for r in read_jsonl(p)]
     expected = {
-        f"{r['fact_id']}:{i}" for r in rows for i in range(int(settings["samples_per_question"]))
+        record["row_id"]
+        for r in rows
+        for record in (
+            reference_candidates(r, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"]))
+            if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"
+            else [{"row_id": f"{r['fact_id']}:{i}"} for i in range(int(settings["samples_per_question"]))]
+        )
     }
     if len(records) != len(expected) or {r["row_id"] for r in records} != expected:
         raise ValueError("Candidate shards do not match prepared questions")
     _complete(target, {"num_candidates": len(records), "rows_sha256": _digest(records)})
     return target
+
+
+def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
+    """Construct a labeled OOD ranking task, never treat references as model generations."""
+    positive, negative = {}, {}
+    for answer in row["aliases"]:
+        if _normal(answer):
+            positive.setdefault(_normal(answer), answer)
+    for answer in row["incorrect_answers"]:
+        if _normal(answer):
+            negative.setdefault(_normal(answer), answer)
+    overlap = set(positive) & set(negative)
+    for key in overlap:
+        positive.pop(key)
+        negative.pop(key)
+    if not positive or not negative:
+        raise ValueError(f"No unambiguous mixed reference answers: {row['fact_id']}")
+    # Select without detector scores, then shuffle to avoid label-dependent tie order.
+    pairs = [(a, label) for label, table in ((1, positive), (0, negative)) for a in list(table.values())[:per_class]]
+    digest = hashlib.sha256(f"{seed}:{row['fact_id']}".encode()).digest()
+    rng = np.random.default_rng(int.from_bytes(digest[:8], "little"))
+    pairs = [pairs[int(i)] for i in rng.permutation(len(pairs))]
+    return [
+        {**row, "answer": answer, "correct": label, "candidate_index": i,
+         "grade_status": "benchmark_reference_label", "candidate_source": "benchmark_reference",
+         "row_id": f"{row['fact_id']}:{i}"}
+        for i, (answer, label) in enumerate(pairs)
+    ]
 
 
 def _replay_rows(config: dict) -> list[dict]:
@@ -916,6 +962,8 @@ def _fit_analysis(config: dict, rows: list[dict], progress) -> dict:
     )
     seed = int(config["experiment"]["seed"])
     scores: dict[str, np.ndarray] = {"base_likelihood": loaded["base"][1]}
+    if settings.get("confirmatory_method"):
+        scores["answer_length_words"] = np.asarray([len(r["answer"].split()) for r in rows], dtype=float)
     transfers, artifacts, diagnostics = {}, {}, {}
     for layer in map(str, settings["layers"]):
         progress(f"Layer {layer}: fitting update directions")
@@ -995,6 +1043,11 @@ def _fit_analysis(config: dict, rows: list[dict], progress) -> dict:
     geometric = [name for name in scores if "/correct_a/" in name and not name.endswith("/norm")]
     selected = max(geometric, key=lambda name: validation[name])
     selected_transfer = max(transfers, key=lambda name: validation[name])
+    confirmatory = settings.get("confirmatory_method")
+    if confirmatory:
+        if confirmatory not in geometric or confirmatory not in transfers:
+            raise ValueError("confirmatory_method must name an available A geometric method with transfer")
+        selected = selected_transfer = confirmatory
     families = {
         source: [n for n in scores if f"/{source}/" in n and not n.endswith("/norm")]
         for source in (*ADAPTERS, "contrast", "activation_pca")
@@ -1006,6 +1059,7 @@ def _fit_analysis(config: dict, rows: list[dict], progress) -> dict:
     artifacts["selected"] = selected
     artifacts["selected_transfer"] = selected_transfer
     artifacts["selected_by_family"] = selected_by_family
+    artifacts["selection_rule"] = "predeclared_method_validation_sign" if confirmatory else "validation_auroc"
     return {
         "artifacts": artifacts,
         "scores": scores,
@@ -1061,7 +1115,16 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
             )
         reports = saved["methods"]
     progress(f"Evaluating {len(scores)} score methods; {len(reports)} reports already saved")
+    report_names = set(scores)
+    if settings.get("analysis_report_scope") == "confirmatory":
+        report_names = {
+            selected, selected_transfer, *selected_by_family.values(),
+            selected.replace("/correct_a/", "/incorrect/"), "base_likelihood", "answer_length_words",
+            *[name for name in scores if name.endswith(("/supervised_probe", "/random/base"))],
+        }
     for method_index, (name, raw) in enumerate(scores.items(), start=1):
+        if name not in report_names:
+            continue
         variants = {"native": signs[name] * raw}
         if name in transfers:
             variants["a_to_b"] = signs[name] * transfers[name]
@@ -1104,6 +1167,8 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
         {
             "schema_version": SCHEMA,
             "selected_on_validation": selected,
+            "selection_rule": artifacts.get("selection_rule", "validation_auroc"),
+            "ood_candidate_mode": settings.get("ood_candidate_mode", "generated"),
             "selected_transfer_on_a_validation": selected_transfer,
             "selected_by_family": selected_by_family,
             "rows_sha256": _digest(rows),
@@ -1111,7 +1176,7 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
             "methods": reports,
             "limitations": [
                 "Negatives are reference-rejected model samples; audit for valid unlisted aliases.",
-                "TruthfulQA reference-match grading excludes ambiguous outputs.",
+                "Generated TruthfulQA answers exclude ambiguous reference matches; supplied references are a separate ranking task.",
                 "Supervised probe uses additional probe_train correctness labels.",
                 "Duplicate/alias grouping cannot guarantee semantic fact disjointness.",
             ],
@@ -1121,7 +1186,8 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
     lines = [
         "# Factual LoRA shift correctness experiment",
         "",
-        f"Frozen validation-selected method: `{selected}`",
+        f"Frozen method: `{selected}`; selection rule: {artifacts.get('selection_rule', 'validation_auroc')}",
+        f"OOD candidate mode: {settings.get('ood_candidate_mode', 'generated')}",
         "",
         "AUROC is for correctness. Confidence intervals bootstrap question/alias groups.",
         "",

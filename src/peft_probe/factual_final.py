@@ -31,6 +31,17 @@ def frozen_rows(cached: dict, metrics: dict, rows: list[dict], predictions: list
     source = selected if selected in fitted["transfers"] else source
     transfer = f"{source}/a_to_b"
     methods = list(dict.fromkeys([selected, source, transfer, incorrect, BASELINE]))
+    if "answer_length_words" in fitted["scores"]:
+        methods.append("answer_length_words")
+    if metrics.get("selection_rule") == "predeclared_method_validation_sign":
+        layer = selected.split("/")[0]
+        for name in (
+            artifacts["selected_by_family"].get("activation_pca"),
+            f"{layer}/supervised_probe",
+            f"{layer}/random/base",
+        ):
+            if name in fitted["scores"] and name not in methods:
+                methods.append(name)
     matched = selected.replace("/correct_a/", "/incorrect/")
     if matched != selected and matched in fitted["scores"] and matched not in methods:
         methods.append(matched)
@@ -81,6 +92,12 @@ def frozen_rows(cached: dict, metrics: dict, rows: list[dict], predictions: list
     comparisons = [(transfer, source), (selected, incorrect)]
     if matched in methods and matched != incorrect:
         comparisons.append((selected, matched))
+    comparisons.append((selected, BASELINE))
+    if "answer_length_words" in methods:
+        comparisons.append((selected, "answer_length_words"))
+    for name in methods:
+        if "activation_pca" in name or name.endswith(("/supervised_probe", "/random/base")):
+            comparisons.append((selected, name))
     return (
         heldout,
         methods,
@@ -156,9 +173,12 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         f"Frozen transfer source: `{selections['transfer_source']}`",
         f"Validation-selected incorrect control: `{selections['incorrect_validation_selected']}`",
         f"Matched geometry control: `{selections['incorrect_matched_geometry']}`",
+        f"Selection rule: {metrics.get('selection_rule', 'validation_auroc')}",
+        f"OOD candidate mode: {metrics.get('ood_candidate_mode', 'generated')}",
         "",
         "All methods use the same mixed questions, original validation signs and half credit for ties.",
         "Questions have equal weight; paired 95% intervals resample question/alias groups.",
+        "Reference-mode OOD scores rank benchmark-supplied answers; they do not measure generated-answer detection.",
         "",
     ]
     for split in ("test", "ood"):
@@ -205,7 +225,13 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
     )
     _json(
         output / "metrics.json",
-        {"signature": provenance, "selections": selections, "datasets": datasets},
+        {
+            "signature": provenance,
+            "selections": selections,
+            "datasets": datasets,
+            "selection_rule": metrics.get("selection_rule", "validation_auroc"),
+            "ood_candidate_mode": metrics.get("ood_candidate_mode", "generated"),
+        },
     )
     _json(output / "per_question.json", question_rows)
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -16,7 +16,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 CONFIG=${1:-configs/factual_shift.yaml}
 COMMAND=${2:-run-factual-shift}
-if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" && "$COMMAND" != "repair-factual-shift" && "$COMMAND" != "audit-factual-shift" && "$COMMAND" != "within-question-factual-shift" && "$COMMAND" != "final-checks-factual-shift" ]]; then
+if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" && "$COMMAND" != "repair-factual-shift" && "$COMMAND" != "audit-factual-shift" && "$COMMAND" != "within-question-factual-shift" && "$COMMAND" != "final-checks-factual-shift" && "$COMMAND" != "run-study-factual-shift" ]]; then
   echo "Unsupported factual-shift command: $COMMAND" >&2
   exit 2
 fi

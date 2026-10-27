@@ -302,6 +302,92 @@ def test_analysis_rejects_checkpoint_from_different_replay_text(tmp_path, monkey
     assert (tmp_path / "analysis_failure.json").exists()
 
 
+def test_reference_ood_uses_labels_and_removes_conflicts_without_generated_grading():
+    row = {"fact_id": "ood1", "split": "ood", "question": "Q", "aliases": ["True", "True!", "conflict"],
+           "incorrect_answers": ["False", "False!", "conflict"], "answer": "True"}
+    records = fs.reference_candidates(row, 3, 43)
+    assert {r["answer"] for r in records} == {"True", "False"}
+    assert sorted(r["correct"] for r in records) == [0, 1]
+    assert len({r["row_id"] for r in records}) == 2
+    assert all(r["candidate_source"] == "benchmark_reference" for r in records)
+    assert records == fs.reference_candidates(row, 3, 43)
+    with pytest.raises(ValueError, match="unambiguous mixed"):
+        fs.reference_candidates({**row, "incorrect_answers": ["True", "conflict"]}, 3, 43)
+
+
+def test_reference_collection_does_not_generate_for_ood_and_resumes(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    cfg["factual_shift"]["ood_candidate_mode"] = "references"
+    rows = [
+        {"fact_id": "validation1", "split": "validation", "question": "Q1", "aliases": ["yes"],
+         "answer": "yes", "benchmark": "trivia_qa"},
+        {"fact_id": "ood1", "split": "ood", "question": "Q2", "aliases": ["yes"],
+         "incorrect_answers": ["no"], "answer": "yes", "benchmark": "truthful_qa"},
+    ]
+    monkeypatch.setattr(fs, "_stage", lambda *args: tmp_path)
+    monkeypatch.setattr(fs, "_read_data", lambda cfg: rows)
+    monkeypatch.setattr(fs, "load_tokenizer", lambda cfg: None)
+    monkeypatch.setattr(fs, "load_base_model", lambda cfg: SimpleNamespace(eval=lambda: None))
+
+    def generate(m, t, group, settings, sample):
+        assert all(row["split"] != "ood" for row in group)
+        return [row["answer"] for row in group]
+
+    monkeypatch.setattr(fs, "_generate", generate)
+    fs.collect_candidates(cfg)
+    records = [r for p in tmp_path.glob("shard_*.jsonl") for r in fs.read_jsonl(p)]
+    assert len(records) == cfg["factual_shift"]["samples_per_question"] + 2
+    assert {r["correct"] for r in records if r["split"] == "ood"} == {0, 1}
+    monkeypatch.setattr(fs, "load_base_model", lambda *args: pytest.fail("Must resume"))
+    fs.collect_candidates(cfg)
+
+
+def test_confirmatory_method_is_fixed_and_length_sign_uses_validation_only(tmp_path, monkeypatch):
+    cfg, rows, loaded = _fake_corpus(tmp_path)
+    method = "-1/correct_a/delta/fraction_2"
+    cfg["factual_shift"]["confirmatory_method"] = method
+    for row in rows:
+        row["answer"] = "a longer correct answer" if row["correct"] else "wrong"
+    monkeypatch.setattr(fs, "load_features", lambda cfg, r, source: loaded[source])
+    fitted = fs._fit_analysis(cfg, rows, lambda *args: None)
+    assert fitted["artifacts"]["selected"] == method
+    assert fitted["artifacts"]["selected_transfer"] == method
+    assert fitted["artifacts"]["selection_rule"] == "predeclared_method_validation_sign"
+    sign = fitted["artifacts"]["signs"]["answer_length_words"]
+    assert sign == 1
+    for row in rows:
+        if row["split"] in {"test", "ood"}:
+            row["correct"] = 1 - row["correct"]
+    again = fs._fit_analysis(cfg, rows, lambda *args: None)
+    assert again["artifacts"]["selected"] == method
+    assert again["artifacts"]["signs"]["answer_length_words"] == sign
+    cfg["factual_shift"]["confirmatory_method"] = "missing"
+    with pytest.raises(ValueError, match="confirmatory_method"):
+        fs._fit_analysis(cfg, rows, lambda *args: None)
+
+
+def test_confirmatory_report_scope_keeps_required_frozen_controls(tmp_path, monkeypatch):
+    from peft_probe.factual_final import frozen_rows
+
+    cfg, rows, loaded = _fake_corpus(tmp_path)
+    cfg["factual_shift"].update(confirmatory_method="-1/correct_a/delta/fraction_2", analysis_report_scope="confirmatory")
+    monkeypatch.setattr(fs, "_replay_rows", lambda config: rows)
+    monkeypatch.setattr(fs, "load_features", lambda cfg, r, source: loaded[source])
+    monkeypatch.setattr(fs, "_stage", lambda *args: tmp_path)
+    result = fs.analyze(cfg)
+    report = json.loads((result / "metrics.json").read_text())
+    cached = torch.load(result / "analysis_fit.pt", map_location="cpu", weights_only=False)
+    predictions = [json.loads(line) for line in (result / "predictions.jsonl").read_text().splitlines()]
+    _, methods, comparisons, _ = frozen_rows(cached, report, rows, predictions)
+    assert len(report["methods"]) < len(cached["fitted"]["scores"])
+    assert "-1/incorrect/delta/fraction_2" in methods
+    assert "answer_length_words" in methods
+    assert "-1/supervised_probe" in methods
+    assert "-1/random/base" in methods
+    assert any("activation_pca" in method for method in methods)
+    assert ("-1/correct_a/delta/fraction_2", "answer_length_words") in comparisons
+
+
 def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch):
     """Exercise preparation -> matched training -> candidates -> four replays -> report."""
     import datasets

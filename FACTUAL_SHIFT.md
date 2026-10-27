@@ -95,6 +95,62 @@ created. A completion marker alone does not protect against later file corruptio
 Check storage capacity/quota if damaged writes recur; the archive error alone does
 not establish the cause of the damage. Do not use `--force` for this repair.
 
+## Confirm the pilot across fresh seeds
+
+The prospective protocol, existing pilot numbers, interpretation limits and related
+work are in [research/FACTUAL_SHIFT_STUDY.md](research/FACTUAL_SHIFT_STUDY.md).
+The source must be your actual completed Llama factual-run YAML. This copies its
+exact model/loading and LoRA settings, fixes the pilot method, and creates three
+isolated full-pipeline runs (nine newly trained adapters). It does not modify the
+pilot or reuse its trained adapters. Default seeds are 43, 44 and 45; the source
+pilot seed is excluded. Existing target directories are never overwritten.
+
+From the repository on the cluster:
+
+```bash
+git pull --ff-only origin main
+export PYTHON_BIN="$HOME/LLM_Haloscope/.venv/bin/python"
+export PEFT_OVERLAY="$HOME/peft-probe-overlay"
+export PYTHONPATH="$PWD/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
+"$PYTHON_BIN" scripts/factual_study.py prepare configs/factual_shift_llama2.yaml
+mkdir -p slurm/logs
+sbatch slurm/factual_study.sbatch configs/factual_confirmation/study.json
+```
+
+The default array runs three seeds with one active GPU job at a time, preserving the
+existing 32 GB memory and requeue settings. If using `--seeds` with more than three
+seeds, override `sbatch --array=0-N%1` with N equal to the number of seeds minus one.
+To resume, resubmit the same array/manifest; do not rerun `prepare` or use `--force`.
+Each task executes training, shared-answer replay, analysis and final paired checks.
+Per-seed reports are written under
+`outputs/factual_confirmation/seed_<seed>/factual_shift_v1/results/within_question_final/`.
+
+The primary layer/rank/view is fixed in advance; only its score sign uses validation.
+The incorrect matched-geometry control, length baseline, random direction, activation
+PCA and supervised probe remain visible. A narrower report scope avoids bootstrapping
+the entire method search grid, while retaining cached scores and relevant controls.
+Bootstrap draws increase to 2,000. All original data sizes and training parameters
+are inherited from the source; this is substantial new GPU work, not a CPU-only reanalysis.
+
+OOD now ranks benchmark-supplied correct and incorrect TruthfulQA reference answers
+(up to three per class), separately from generated TriviaQA answers. It is explicitly
+a **reference-ranking task**, not a repair of generated-answer labels or an official
+TruthfulQA multiple-choice metric. The pilot's uninformative generated-answer OOD
+result remains a limitation. Reference-answer wording and length can be confounds.
+
+After **all** planned seeds finish:
+
+```bash
+"$PYTHON_BIN" scripts/factual_study.py summarize configs/factual_confirmation/study.json
+cat configs/factual_confirmation/report/summary.md
+```
+
+The aggregator requires every planned seed and rejects changed configs or mismatched
+analysis provenance. It reports per-seed paired intervals and descriptive seed means
+and standard deviations, without treating overlapping seed-question observations
+as independent samples. Incomplete or unusable runs must be resolved, not discarded.
+The research is not empirically finished until these cluster results are reviewed.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized

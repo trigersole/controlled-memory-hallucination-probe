@@ -241,6 +241,7 @@ def _parser() -> argparse.ArgumentParser:
         ("within-question-factual-shift", "Evaluate frozen answer scores within each question"),
         ("final-checks-factual-shift", "Compare frozen transfer and incorrect-control answer rankings"),
         ("run-factual-shift", "Run or resume every factual LoRA experiment stage"),
+        ("run-study-factual-shift", "Run an isolated confirmation seed and its final diagnostics"),
     ):
         subparsers.add_parser(command, help=help_text)
     factual_train = subparsers.add_parser("train-factual-shift", help="Train one factual/control LoRA")
@@ -326,6 +327,10 @@ def main() -> None:
             for source in factual.SOURCES:
                 print(factual.collect_features(config, source, args.force), flush=True)
             print(factual.analyze(config, args.force), flush=True)
+            if args.command == "run-study-factual-shift":
+                from .factual_final import analyze_final_checks
+
+                print(analyze_final_checks(config, args.force), flush=True)
         return
     initialize_output(config)
     if args.command == "validate":
