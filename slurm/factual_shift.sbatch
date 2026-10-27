@@ -16,8 +16,8 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 CONFIG=${1:-configs/factual_shift.yaml}
 COMMAND=${2:-run-factual-shift}
-if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" ]]; then
-  echo "Expected run-factual-shift or analyze-factual-shift as the second argument." >&2
+if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" && "$COMMAND" != "repair-factual-shift" && "$COMMAND" != "audit-factual-shift" ]]; then
+  echo "Expected run-factual-shift, analyze-factual-shift, audit-factual-shift, or repair-factual-shift." >&2
   exit 2
 fi
 HALOSCOPE_DIR=${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}

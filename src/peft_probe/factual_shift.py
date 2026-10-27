@@ -557,6 +557,158 @@ def replay(model, tokenizer, rows: list[dict], settings: dict) -> tuple[dict, li
     return result, likelihood.cpu().tolist()
 
 
+class FeatureShardError(RuntimeError):
+    """A missing, unreadable, or structurally invalid feature shard."""
+
+
+class FeatureCorpusMismatch(ValueError):
+    """Feature text provenance differs; automatic repair must not mix corpora."""
+
+
+def _read_feature_shard(path: Path, rows: list[dict], digest: str, layers: list[int]) -> dict:
+    try:
+        saved = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        raise FeatureShardError(
+            f"Cannot read feature shard {path}: {exc}. "
+            "Use repair-factual-shift to rebuild damaged feature shards."
+        ) from exc
+    if not isinstance(saved, dict):
+        raise FeatureShardError(f"Invalid feature payload in {path}")
+    if saved.get("rows_sha256") != digest:
+        raise FeatureCorpusMismatch(f"Mismatched replay corpus in {path}")
+    if saved.get("row_ids") != [r["row_id"] for r in rows]:
+        raise FeatureCorpusMismatch(f"Mismatched replay order in {path}")
+    try:
+        for layer in layers:
+            values = saved["features"][str(layer)]
+            if (
+                not isinstance(values, torch.Tensor)
+                or values.ndim != 2
+                or values.shape[0] != len(rows)
+                or values.shape[1] == 0
+                or not torch.isfinite(values).all()
+            ):
+                raise ValueError(f"invalid features for layer {layer}")
+        likelihood = np.asarray(saved["mean_logprob"], dtype=float)
+        if likelihood.shape != (len(rows),) or not np.isfinite(likelihood).all():
+            raise ValueError("invalid likelihood values")
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise FeatureShardError(f"Invalid feature shard {path}: {exc}") from exc
+    return saved
+
+
+def audit_features(config: dict) -> dict:
+    """Read every expected shard, including sources carrying completion markers."""
+    settings = validate(config)
+    rows = _replay_rows(config)
+    digest = _digest(rows)
+    sources = {}
+    for source in SOURCES:
+        directory = root(config) / "features" / source
+        issues, expected = [], set()
+        print(f"[feature audit] Checking {source}", flush=True)
+        for shard, group in chunks(rows, int(settings["shard_size"])):
+            path = directory / f"shard_{shard:05d}.pt"
+            expected.add(path.name)
+            try:
+                _read_feature_shard(path, group, digest, settings["layers"])
+            except FeatureCorpusMismatch as exc:
+                issues.append({"path": str(path), "kind": "incompatible", "error": str(exc)})
+            except FeatureShardError as exc:
+                issues.append(
+                    {
+                        "path": str(path),
+                        "kind": "damaged" if path.exists() else "missing",
+                        "error": str(exc),
+                    }
+                )
+        for path in directory.glob("shard_*.pt"):
+            if path.name not in expected:
+                issues.append(
+                    {
+                        "path": str(path),
+                        "kind": "incompatible",
+                        "error": "Unexpected shard outside configured replay corpus",
+                    }
+                )
+        sources[source] = {
+            "expected_shards": len(expected),
+            "issues": issues,
+            "complete": (directory / "_SUCCESS.json").exists(),
+        }
+    report = {
+        "config_fingerprint": config_fingerprint(config),
+        "rows_sha256": digest,
+        "healthy": all(not item["issues"] and item["complete"] for item in sources.values()),
+        "sources": sources,
+    }
+    atomic_json(root(config) / "feature_integrity.json", report)
+    return report
+
+
+def repair_features(config: dict) -> Path:
+    """Quarantine damaged shards and rebuild only those using saved model adapters."""
+    report = audit_features(config)
+    if any(
+        issue["kind"] == "incompatible"
+        for item in report["sources"].values()
+        for issue in item["issues"]
+    ):
+        raise FeatureCorpusMismatch(
+            "Feature audit found incompatible text provenance; "
+            "refusing automatic repair. See feature_integrity.json"
+        )
+    affected = [
+        source
+        for source, item in report["sources"].items()
+        if item["issues"] or not item["complete"]
+    ]
+    if not affected:
+        print("[feature repair] All feature shards are readable and complete", flush=True)
+        return root(config) / "features"
+    # Reset derived artifacts only in this experiment; preserve them for inspection.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    results = root(config) / "results"
+    if results.exists():
+        archive = results / "repair_archive" / stamp
+        for name in (
+            "_MANIFEST.json",
+            "_SUCCESS.json",
+            "analysis_fit.pt",
+            "frozen_methods.pt",
+            "analysis_metrics_checkpoint.json",
+            "analysis_progress.json",
+            "analysis_failure.json",
+            "metrics.json",
+            "predictions.jsonl",
+            "summary.md",
+        ):
+            path = results / name
+            if path.is_file():
+                archive.mkdir(parents=True, exist_ok=True)
+                path.replace(archive / name)
+    # Invalidate every affected completion marker before changing any feature file.
+    for source in affected:
+        directory = root(config) / "features" / source
+        quarantine = directory / "quarantine" / stamp
+        quarantine.mkdir(parents=True, exist_ok=True)
+        marker = directory / "_SUCCESS.json"
+        if marker.exists():
+            marker.replace(quarantine / marker.name)
+        for issue in report["sources"][source]["issues"]:
+            path = Path(issue["path"])
+            if path.is_file():
+                path.replace(quarantine / path.name)
+    for source in affected:
+        print(f"[feature repair] Rebuilding missing/damaged shards for {source}", flush=True)
+        collect_features(config, source)
+    checked = audit_features(config)
+    if not checked["healthy"]:
+        raise FeatureShardError("Feature repair did not pass the final integrity audit")
+    return root(config) / "features"
+
+
 def collect_features(config: dict, source: str, force: bool = False) -> Path:
     if source not in SOURCES:
         raise ValueError(f"Unknown source {source}")
@@ -581,9 +733,7 @@ def collect_features(config: dict, source: str, force: bool = False) -> Path:
     for shard, group in chunks(rows, int(settings["shard_size"])):
         path = target / f"shard_{shard:05d}.pt"
         if path.exists() and not force:
-            saved = torch.load(path, map_location="cpu", weights_only=False)
-            if saved["rows_sha256"] != digest:
-                raise ValueError("Replay text changed; use a new output directory")
+            _read_feature_shard(path, group, digest, settings["layers"])
             continue
         parts = {str(layer): [] for layer in settings["layers"]}
         likelihood = []
@@ -603,6 +753,9 @@ def collect_features(config: dict, source: str, force: bool = False) -> Path:
         )
     del model
     _release()
+    # Verify file readability before declaring this source complete.
+    for shard, group in chunks(rows, int(settings["shard_size"])):
+        _read_feature_shard(target / f"shard_{shard:05d}.pt", group, digest, settings["layers"])
     _complete(target, {"rows_sha256": digest, "num_rows": len(rows)})
     return target
 
@@ -613,10 +766,16 @@ def load_features(config: dict, rows: list[dict], source: str) -> tuple[dict, np
     ids, likelihood = [], []
     parts = {str(layer): [] for layer in validate(config)["layers"]}
     digest = _digest(rows)
-    for path in sorted(target.glob("shard_*.pt")):
-        saved = torch.load(path, map_location="cpu", weights_only=False)
-        if saved["rows_sha256"] != digest:
-            raise ValueError(f"Mismatched replay corpus for {source}")
+    expected = {
+        f"shard_{shard:05d}.pt" for shard, _ in chunks(rows, int(validate(config)["shard_size"]))
+    }
+    if {path.name for path in target.glob("shard_*.pt")} != expected:
+        raise FeatureShardError(
+            f"Missing or unexpected feature shards in {target}; run audit-factual-shift"
+        )
+    for shard, group in chunks(rows, int(validate(config)["shard_size"])):
+        path = target / f"shard_{shard:05d}.pt"
+        saved = _read_feature_shard(path, group, digest, validate(config)["layers"])
         ids.extend(saved["row_ids"])
         likelihood.extend(saved["mean_logprob"])
         for key, values in parts.items():

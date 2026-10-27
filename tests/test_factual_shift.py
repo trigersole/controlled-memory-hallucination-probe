@@ -379,3 +379,57 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
     replay_rows[-1]["answer"] = "changed text"
     with pytest.raises(ValueError, match="Mismatched replay corpus"):
         fs.load_features(cfg, replay_rows, "base")
+
+    # A stale completion marker must not hide a truncated PyTorch archive.
+    damaged = fs.root(cfg) / "features" / "base" / "shard_00000.pt"
+    intact = fs.root(cfg) / "features" / "base" / "shard_00001.pt"
+    intact_bytes = intact.read_bytes()
+    adapter_markers = {
+        a: (fs.root(cfg) / "adapters" / a / "final" / "_SUCCESS.json").read_bytes()
+        for a in fs.ADAPTERS
+    }
+    broken_bytes = damaged.read_bytes()[:-128]
+    damaged.write_bytes(broken_bytes)
+    with pytest.raises(fs.FeatureShardError, match="Cannot read feature shard.*shard_00000"):
+        fs.load_features(cfg, fs._replay_rows(cfg), "base")
+    audit = fs.audit_features(cfg)
+    assert not audit["healthy"]
+    assert len(audit["sources"]["base"]["issues"]) == 1
+    assert audit["sources"]["base"]["issues"][0]["kind"] == "damaged"
+
+    replayed = []
+    replay = fs.replay
+
+    def track_replay(model, tokenizer, batch, settings):
+        replayed.extend(r["row_id"] for r in batch)
+        return replay(model, tokenizer, batch, settings)
+
+    monkeypatch.setattr(fs, "replay", track_replay)
+    fs.repair_features(cfg)
+    assert len(replayed) == cfg["factual_shift"]["shard_size"]
+    assert intact.read_bytes() == intact_bytes
+    assert all(
+        (fs.root(cfg) / "adapters" / a / "final" / "_SUCCESS.json").read_bytes() == marker
+        for a, marker in adapter_markers.items()
+    )
+    quarantined = list((damaged.parent / "quarantine").glob("*/shard_00000.pt"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == broken_bytes
+    assert not (result / "_SUCCESS.json").exists()
+    assert list((result / "repair_archive").glob("*/summary.md"))
+    assert fs.audit_features(cfg)["healthy"]
+    fs.analyze(cfg)
+    assert (result / "summary.md").exists()
+    assert (result / "_SUCCESS.json").exists()
+    final_summary = (result / "summary.md").read_bytes()
+    fs.repair_features(cfg)
+    assert (result / "summary.md").read_bytes() == final_summary
+
+    # A readable shard belonging to different text is not automatically overwritten.
+    saved = torch.load(damaged, map_location="cpu", weights_only=False)
+    saved["rows_sha256"] = "different corpus"
+    torch.save(saved, damaged)
+    incompatible_bytes = damaged.read_bytes()
+    with pytest.raises(fs.FeatureCorpusMismatch, match="refusing automatic repair"):
+        fs.repair_features(cfg)
+    assert damaged.read_bytes() == incompatible_bytes

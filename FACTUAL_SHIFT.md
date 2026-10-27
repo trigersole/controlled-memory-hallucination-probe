@@ -74,6 +74,27 @@ interrupted analysis to resume. Feature matrices are released after fitting, and
 CPU library threads are limited to the allocated CPUs. The final report remains
 `results/summary.md`; intermediate checkpoints are not completed experimental results.
 
+If PyTorch reports `failed finding central directory`, a saved archive is unreadable.
+The analysis now includes the exact feature filename in its error. You can audit
+every feature shard, including directories carrying `_SUCCESS.json`, using
+`audit-factual-shift`. To repair and then finish analysis in one GPU job:
+
+```bash
+sbatch slurm/factual_shift.sbatch configs/factual_shift_llama2.yaml repair-factual-shift
+```
+
+Repair validates all sources, quarantines unreadable/missing or invalid shards, and
+replays only affected shards with the existing base model or saved adapter. It does
+not train adapters or generate new candidate answers. Readable matching shards are
+preserved. Affected derived analysis files are archived under
+`results/repair_archive/`, and repaired features are audited again before analysis.
+Files with mismatched question/answer provenance are reported but not automatically
+overwritten. The audit report is `factual_shift_v1/feature_integrity.json`.
+Feature writes are flushed to disk and read back before a new completion marker is
+created. A completion marker alone does not protect against later file corruption.
+Check storage capacity/quota if damaged writes recur; the archive error alone does
+not establish the cause of the damage. Do not use `--force` for this repair.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized
