@@ -15,10 +15,38 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 CONFIG=${1:-configs/factual_shift.yaml}
-PYTHON_BIN=${PYTHON_BIN:-$PWD/.venv/bin/python}
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+HALOSCOPE_DIR=${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}
+DEFAULT_PYTHON="$PWD/.venv/bin/python"
+if [[ ! -x "$DEFAULT_PYTHON" ]]; then
+  DEFAULT_PYTHON="$HALOSCOPE_DIR/.venv/bin/python"
+fi
+PYTHON_BIN=${HALOSCOPE_PYTHON:-${PYTHON_BIN:-$DEFAULT_PYTHON}}
+PEFT_OVERLAY=${PEFT_OVERLAY:-${SCRATCH:-$HOME}/peft-probe-overlay}
+export PYTHONPATH="$PWD/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
 mkdir -p slurm/logs
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python is not executable: $PYTHON_BIN. Set PYTHON_BIN to your experiment environment." >&2
+  exit 2
+fi
+echo "Python: $PYTHON_BIN"
+echo "Dependency overlay: $PEFT_OVERLAY"
+"$PYTHON_BIN" - <<'PY'
+import importlib
+import sys
+
+for name in ("torch", "peft", "transformers", "datasets", "sklearn", "yaml"):
+    try:
+        module = importlib.import_module(name)
+    except Exception as exc:
+        print(f"Dependency check failed for {name} in {sys.executable}: {exc}", file=sys.stderr)
+        print("Use the same PYTHON_BIN and PEFT_OVERLAY as your working experiment jobs.", file=sys.stderr)
+        sys.exit(2)
+    print(f"{name}: {getattr(module, '__version__', 'unknown')}")
+PY
 
 requeue_current() {
   echo "Wall-time warning; stopping the current stage before requeue. Saved shards/checkpoints will resume."

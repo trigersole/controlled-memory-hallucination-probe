@@ -27,7 +27,14 @@ sbatch slurm/factual_shift.sbatch configs/factual_shift.yaml
 ```
 
 The job uses the same GPU partition convention as existing jobs; adjust its resource
-header for your cluster. Set `PYTHON_BIN` if the environment is elsewhere. Stages skip
+header for your cluster. Set `PYTHON_BIN` if the environment is elsewhere. The launcher
+also honors `HALOSCOPE_PYTHON`, and falls back to the existing
+`$HOME/LLM_Haloscope/.venv/bin/python` when the repository has no `.venv`.
+Like the older launchers, it adds `${PEFT_OVERLAY:-${SCRATCH:-$HOME}/peft-probe-overlay}`
+to `PYTHONPATH`, so an existing PEFT overlay can supply dependencies without changing
+the HaloScope environment. Set `PEFT_OVERLAY` explicitly if yours is elsewhere.
+The selected Python, overlay path, and package versions are logged and imports are
+checked before running stages. Stages skip
 completed outputs, training resumes complete Trainer checkpoints, and generation/
 replay resume atomic shards. Wall-time warnings stop the active process and requeue
 the job. Restart the same command after an ordinary interruption.
