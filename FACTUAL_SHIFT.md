@@ -251,6 +251,52 @@ Original predictions, metrics, adapters, and features are not rewritten. Source
 hashes protect against stale report reuse. If intentionally changing diagnostic
 settings, the standalone `--force` rebuilds only `within_question/` reports.
 
+### Final transfer and incorrect-training checks
+
+Use the same completed run to evaluate A-to-B transfer and the incorrect-answer
+training control within each question. This is CPU analysis of the existing
+`results/analysis_fit.pt` score checkpoint; it does not retrain, refit directions,
+generate answers, or read model/feature weights. Use the same environment and
+configuration as the original run:
+
+```bash
+git pull --ff-only origin main
+export PYTHON_BIN="$HOME/LLM_Haloscope/.venv/bin/python"
+export PEFT_OVERLAY="$HOME/peft-probe-overlay"
+sbatch slurm/factual_shift.sbatch \
+  configs/factual_shift_llama2.yaml final-checks-factual-shift
+```
+
+The existing launcher reserves a GPU, but this command computes only on the CPU.
+The summary is saved separately:
+
+```bash
+cat outputs/factual_shift_llama2/factual_shift_v1/results/within_question_final/summary.md
+```
+
+All methods use the same mixed-question cohort and alias-group bootstrap draws.
+The report contains native A, A-to-B, the validation-selected incorrect control,
+and likelihood. If the incorrect control with exactly the primary layer/view/rank
+differs from its family's validation-selected control, both are included. Each
+retains its original validation sign; transfer inherits A's sign. If the primary
+does not support transfer, the report explicitly uses the original transfer
+source selected on A validation and compares transfer against that source.
+
+Paired differences are transfer minus native A and factual primary minus each
+incorrect control. Above-chance transfer supports answer-specific transfer on
+the mixed cohort. A positive factual-minus-incorrect interval supports an
+advantage for factual training under that comparison. An interval containing zero
+does not prove equivalence or that the signal is generic. A-to-B similarity is
+not a causal truth-direction result. Without mixed OOD questions, OOD ranking
+remains unavailable. Conclusions should describe a single-run, conditional pilot;
+pairwise ranking is not answer-selection accuracy.
+
+Original analysis and `within_question/` reports remain unchanged. Checkpoint,
+configuration, corpus, saved orientations and original prediction alignment are
+validated before writing the final report. A missing/stale score checkpoint causes
+an error, never automatic retraining. The CLI's `--force` for this command rebuilds
+only `within_question_final/` diagnostics.
+
 Everything is under `outputs/trivia_factual_shift/factual_shift_v1/`:
 
 - `data/rows.jsonl`: split/group assignments and factual references.

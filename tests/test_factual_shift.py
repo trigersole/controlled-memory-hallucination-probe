@@ -227,6 +227,17 @@ def test_analysis_pipeline_freezes_selection_and_test_label_changes_cannot_affec
     assert any("a_to_b" in key for key in report["methods"])
     selected = report["selected_on_validation"]
     assert report["methods"][selected]["test"]["auroc"] > 0.9
+    from peft_probe.factual_final import frozen_rows
+    from peft_probe.within_question import evaluate_within_question
+
+    cached = torch.load(result / "analysis_fit.pt", map_location="cpu", weights_only=False)
+    predictions = [json.loads(line) for line in (result / "predictions.jsonl").read_text().splitlines()]
+    heldout, methods, comparisons, _ = frozen_rows(cached, report, rows, predictions)
+    within, _ = evaluate_within_question(
+        [r for r in heldout if r["split"] == "test"], methods, 20, 42, comparisons
+    )
+    assert within["n_mixed_questions"] == 4
+    assert within["paired_comparisons"][0]["left"].endswith("/a_to_b")
     for row in rows:
         if row["split"] in {"test", "ood"}:
             row["correct"] = 1 - row["correct"]

@@ -74,11 +74,15 @@ def _quantiles(values: list[float]) -> list[float] | None:
 
 
 def evaluate_within_question(
-    rows: list[dict], methods: list[str], samples: int, seed: int
+    rows: list[dict], methods: list[str], samples: int, seed: int,
+    comparisons: list[tuple[str, str]] | None = None,
 ) -> tuple[dict, list[dict]]:
     """Each row has fact_id/group_id/correct/scores. Each mixed question has equal weight."""
     if samples <= 0:
         raise ValueError("bootstrap samples must be positive")
+    for left, right in comparisons or []:
+        if left not in methods or right not in methods:
+            raise ValueError("Paired comparison refers to an unknown method")
     grouped = defaultdict(list)
     for row in rows:
         if row["correct"] not in (-1, 0, 1):
@@ -100,13 +104,13 @@ def evaluate_within_question(
             scores = [row["scores"][method] for row in candidates]
             mean = math.fsum(scores) / len(scores)
             centered[method].extend(score - mean for score in scores)
-            comparisons = [
+            pairwise_values = [
                 int(pos["scores"][method] > neg["scores"][method])
                 + 0.5 * int(pos["scores"][method] == neg["scores"][method])
                 for pos in positive
                 for neg in negative
             ]
-            accuracies[method] = math.fsum(comparisons) / pair_count if pair_count else None
+            accuracies[method] = math.fsum(pairwise_values) / pair_count if pair_count else None
             ties[method] = sum(
                 pos["scores"][method] == neg["scores"][method]
                 for pos in positive
@@ -174,7 +178,7 @@ def evaluate_within_question(
                 "mean": mean - baseline_mean if mixed else None,
                 "ci95": _quantiles(differences[method]),
             }
-    return {
+    result = {
         "n_candidates": len(rows),
         "n_graded": sum(r["correct"] >= 0 for r in rows),
         "n_ambiguous": sum(r["correct"] < 0 for r in rows),
@@ -189,7 +193,23 @@ def evaluate_within_question(
         ),
         "n_correct_incorrect_pairs": sum(q["n_pairs"] for q in mixed),
         "methods": reports,
-    }, questions
+    }
+    if comparisons is not None:
+        result["paired_comparisons"] = [
+            {
+                "left": left,
+                "right": right,
+                "mean": (
+                    reports[left]["within_question_pairwise_accuracy"]
+                    - reports[right]["within_question_pairwise_accuracy"] if mixed else None
+                ),
+                "ci95": _quantiles([
+                    a - b for a, b in zip(bootstrap[left], bootstrap[right], strict=True)
+                ]),
+            }
+            for left, right in comparisons
+        ]
+    return result, questions
 
 
 def analyze_saved_predictions(

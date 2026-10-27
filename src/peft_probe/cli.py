@@ -239,6 +239,7 @@ def _parser() -> argparse.ArgumentParser:
         ("audit-factual-shift", "Check every saved factual feature shard for corruption"),
         ("repair-factual-shift", "Repair damaged feature shards and finish analysis"),
         ("within-question-factual-shift", "Evaluate frozen answer scores within each question"),
+        ("final-checks-factual-shift", "Compare frozen transfer and incorrect-control answer rankings"),
         ("run-factual-shift", "Run or resume every factual LoRA experiment stage"),
     ):
         subparsers.add_parser(command, help=help_text)
@@ -294,6 +295,10 @@ def main() -> None:
             print(factual.collect_features(config, args.source, args.force))
         elif args.command == "analyze-factual-shift":
             print(factual.analyze(config, args.force))
+        elif args.command == "final-checks-factual-shift":
+            from .factual_final import analyze_final_checks
+
+            print(analyze_final_checks(config, args.force))
         elif args.command == "within-question-factual-shift":
             from .within_question import analyze_saved_predictions
 
