@@ -7,6 +7,24 @@ hypothesis works; real model runs are required.
 
 ## Run
 
+To use the same Llama model as an existing run, generate a new configuration on
+the cluster from that run's YAML. This copies the exact model identity/local path
+and loading options; it keeps a context limit of at least 512 for the new QA inputs.
+It creates a separate output directory and trains fresh TriviaQA adapters without
+loading or changing your old synthetic adapters:
+
+```bash
+"$PYTHON_BIN" scripts/create_factual_shift_config.py \
+  configs/pilot_llama2.yaml configs/factual_shift_llama2.yaml
+sbatch slurm/factual_shift.sbatch configs/factual_shift_llama2.yaml
+```
+
+Use your actual existing run config filename in place of `configs/pilot_llama2.yaml`.
+For a small Llama pipeline check, add `--template configs/factual_shift_smoke.yaml`
+and choose `configs/factual_shift_llama2_smoke.yaml` as the target. The helper refuses
+to overwrite configurations or reuse existing run output directories. Completed
+Qwen outputs remain in their original folders.
+
 Use the repository's normal Linux GPU environment (`scripts/setup_env.sh`). Start
 with the small integration configuration:
 
