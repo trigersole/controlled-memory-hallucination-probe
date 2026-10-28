@@ -242,6 +242,7 @@ def _parser() -> argparse.ArgumentParser:
         ("final-checks-factual-shift", "Compare frozen transfer and incorrect-control answer rankings"),
         ("run-factual-shift", "Run or resume every factual LoRA experiment stage"),
         ("run-study-factual-shift", "Run an isolated confirmation seed and its final diagnostics"),
+        ("run-popqa-factual-shift", "Evaluate completed factual adapters on frozen PopQA answers"),
     ):
         subparsers.add_parser(command, help=help_text)
     factual_train = subparsers.add_parser("train-factual-shift", help="Train one factual/control LoRA")
@@ -296,6 +297,12 @@ def main() -> None:
             print(factual.collect_features(config, args.source, args.force))
         elif args.command == "analyze-factual-shift":
             print(factual.analyze(config, args.force))
+        elif args.command == "run-popqa-factual-shift":
+            from .factual_popqa import run
+
+            if args.force:
+                raise ValueError("Frozen external evaluation preserves saved artifacts; omit --force")
+            print(run(config), flush=True)
         elif args.command == "final-checks-factual-shift":
             from .factual_final import analyze_final_checks
 

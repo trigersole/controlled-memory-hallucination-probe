@@ -1,0 +1,12 @@
+schema_version: 1
+study_manifest: configs/factual_confirmation/study.json
+output_dir: outputs/factual_popqa
+dataset: akariasai/PopQA
+dataset_revision: main
+split: test
+max_questions: 2000
+sampling_seed: 20261028
+bootstrap_samples: 2000
+# Source model, prompt, generation parameters, layers, adapters and score signs
+# are inherited unchanged. No target-data fitting or method/sign selection.
+length_probe_C: 1.0

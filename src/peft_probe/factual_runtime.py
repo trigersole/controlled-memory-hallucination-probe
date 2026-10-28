@@ -91,12 +91,15 @@ def stage(name, function, *args, **kwargs):
     return result
 
 
-def run_job(config_path, callback, interval=60):
+def run_job(config_path, callback, interval=60, directory=None):
     from .config import load_config, output_dir
 
     global _active
     config = load_config(config_path)
-    runtime = Runtime(output_dir(config) / "factual_shift_v1", interval)
+    runtime = Runtime(
+        Path(directory) if directory is not None else output_dir(config) / "factual_shift_v1",
+        interval,
+    )
     _active = runtime
     runtime.update("initializing", "running")
     (runtime.directory / "pipeline_failure.json").unlink(missing_ok=True)

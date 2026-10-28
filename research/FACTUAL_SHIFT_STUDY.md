@@ -183,6 +183,48 @@ combination is novel requires a fuller related-work comparison before submission
 
 ## Reproduction and remaining work
 
+### Final dataset amendment: PopQA, 2026-10-28
+
+After examining the three TriviaQA confirmation runs and negative TruthfulQA
+reference-ranking results, the researcher requested one final dataset before
+finalization. PopQA was chosen for generated factual-answer evaluation, supported
+by an existing loader in this repository. It has been used elsewhere in the repo;
+it is not claimed to be a benchmark unseen by the researcher or by the base model.
+See [PopQA / Mallen et al.](https://aclanthology.org/2023.acl-long.546/) and the
+[dataset](https://huggingface.co/datasets/akariasai/PopQA).
+
+The final evaluation reuses the three trained adapters per seed, every source-fitted
+direction/origin and its validation sign. Fix the same primary method before
+observing PopQA outcomes. Sample up to 2,000 PopQA questions with seed 20261028,
+using the source prompt and generation parameters, rejecting normalized duplicate
+questions and exact prepared-question overlap across source seeds. Save and share
+the same generated candidates across all three seeds. Correctness uses normalized
+answer-alias containment; do not equate it with audited semantic truth. Bootstrap
+subject groups, explicitly differing from the original question/alias clustering.
+The saved dataset snapshot/fingerprint and full candidate hashes identify the exact
+corpus; the default HF revision resolves from `main` at initial preparation.
+
+Retain the primary, transferred score, matched and validation-selected incorrect
+controls, raw length, likelihood, PCA, random direction and supervised probe.
+In particular, report any below-chance target ranking without reversing its sign.
+No target outcomes select a layer, rank, orientation, sampling budget or control.
+
+Length-adjustment is a secondary analysis prompted by the observed source results.
+Before PopQA evaluation, specify two fixed logistic heads: standardized
+`log(1 + word_count)` and its square, versus the same features plus the frozen A
+score. Fit on original `probe_train` correctness labels only, with C=1 and no
+target-data tuning. Test the paired within-question increment on both original
+test and PopQA, with group-bootstrap intervals. These heads use additional source
+labels and do not turn the geometric method into an unsupervised procedure.
+Failure to improve does not prove full mediation by length; improvement does not
+exclude other style confounds or establish a causal truth representation.
+
+All source artifacts and reports remain unchanged. New outputs are under
+`outputs/factual_popqa/`; saved generations/base replay are shared and adapter replay
+is resumable. Inspect all three planned seeds and all denominators, then finalize
+the bounded report irrespective of whether the new dataset is favorable. This
+follow-up is not a fresh registered confirmation of the original hypothesis.
+
 See `FACTUAL_SHIFT.md` for the cluster commands. The generated `study.json` records
 planned seeds, copied config hashes and output directories. The SLURM array runs
 one seed at a time and uses existing requeue/resume behavior. Completed pilot runs

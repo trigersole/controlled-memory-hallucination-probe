@@ -78,3 +78,15 @@ def test_import_failure_and_successful_system_exit_are_distinguished(tmp_path):
     assert raised.value.code == 0
     assert not (output / "pipeline_failure.json").exists()
     assert json.loads((output / "pipeline_progress.json").read_text())["status"] == "complete"
+
+
+def test_external_diagnostics_leave_source_progress_untouched(tmp_path):
+    config, output = setup_run(tmp_path)
+    output.mkdir(parents=True)
+    progress = output / "pipeline_progress.json"
+    progress.write_text('{"status":"complete","stage":"original"}')
+    before = progress.read_bytes()
+    external = tmp_path / "external/seed_43"
+    run_job(config, lambda: stage("popqa/data", lambda: None), directory=external)
+    assert progress.read_bytes() == before
+    assert json.loads((external / "pipeline_progress.json").read_text())["status"] == "complete"

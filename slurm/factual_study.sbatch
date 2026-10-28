@@ -16,6 +16,11 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 MANIFEST=${1:-configs/factual_confirmation/study.json}
+COMMAND=${2:-run-study-factual-shift}
+if [[ "$COMMAND" != "run-study-factual-shift" && "$COMMAND" != "run-popqa-factual-shift" ]]; then
+  echo "Unsupported study command: $COMMAND" >&2
+  exit 2
+fi
 DEFAULT_PYTHON="$PWD/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON" ]]; then
   DEFAULT_PYTHON="${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}/.venv/bin/python"
@@ -42,4 +47,4 @@ PY
 )
 echo "Study $MANIFEST; array task $SLURM_ARRAY_TASK_ID; config $CONFIG"
 # Replace this wrapper so wall-time/requeue signals reach the existing resumable launcher.
-exec bash slurm/factual_shift.sbatch "$CONFIG" run-study-factual-shift
+exec bash slurm/factual_shift.sbatch "$CONFIG" "$COMMAND"

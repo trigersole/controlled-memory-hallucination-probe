@@ -172,6 +172,78 @@ and standard deviations, without treating overlapping seed-question observations
 as independent samples. Incomplete or unusable runs must be resolved, not discarded.
 The research is not empirically finished until these cluster results are reviewed.
 
+## Final frozen transfer to PopQA
+
+After all three confirmation seeds finish, evaluate the same frozen adapters and
+directions on PopQA, without LoRA retraining or target-data method/sign selection.
+The protocol amendment is in `research/FACTUAL_SHIFT_STUDY.md`. The existing PopQA
+contextual-support experiment is separate and is not modified or reused.
+
+`configs/factual_popqa.yaml` fixes the new question budget, deterministic sampling
+seed, study manifest and output root. Up to 2,000 questions are sampled independently
+of model outcomes, removing normalized duplicate questions and exact question overlap
+with prepared data from all three source seeds. Semantic/pretraining overlap cannot
+be ruled out. Group uncertainty by subject entity; these are not the original
+TriviaQA alias groups. The first run saves a dataset fingerprint and immutable rows
+snapshot; `dataset_revision: main` resolves at that first download. Set an exact HF
+revision before starting if a pinned repository revision is required.
+
+From the cluster repository:
+
+```bash
+git pull --ff-only origin main
+export PYTHON_BIN="$HOME/LLM_Haloscope/.venv/bin/python"
+export PEFT_OVERLAY="$HOME/peft-probe-overlay"
+mkdir -p slurm/logs
+sbatch --array=0 slurm/factual_study.sbatch \
+  configs/factual_confirmation/study.json run-popqa-factual-shift
+```
+
+Submit index `1` only after index `0` completes, then index `2` after index `1`.
+This avoids submitting three array tasks against the cluster's per-user quota.
+Requests remain two CPUs, one GPU, 32 GB memory and 5:50 per allocation, with
+checkpoint-based requeue/resume. Resubmit the same index after an interruption;
+do not regenerate source configs or pass `--force`.
+
+The first seed creates the shared base-generated answer pool and base replay;
+later seeds reuse both. Each seed replays its three frozen adapters on the exact
+same generated answers, with the original prompt, sampling settings and pooling.
+Directions, centers, primary/matched/secondary controls, original signs and
+supervised probe parameters are inherited from the source checkpoint. All target
+scoring uses these frozen quantities; no new directions or sign selection use PopQA.
+Normalized gold-alias containment grades generations, with its usual ambiguity/
+false-match limitations; reference answers are not injected into the candidate pool.
+
+Two additional small classifiers address the length concern. Both fit only original
+`probe_train` correctness labels, using fixed standardized log-word-count and its
+square, logistic regression C=1; the joint model additionally receives the frozen
+A score. No target labels fit or tune these classifiers. This adds source label
+supervision and is reported separately from the geometric method. Their paired
+ranking difference is evaluated on original test and on PopQA. It tests incremental
+prediction under this specified model, not whether length causally explains everything.
+
+Per-seed results and diagnostics are isolated:
+
+- `outputs/factual_popqa/seed_43/results/summary.md` (also seeds 44 and 45)
+- `outputs/factual_popqa/seed_43/pipeline_progress.json`
+- `outputs/factual_popqa/shared/` (saved questions, generations and base replay)
+
+Original configurations, adapters, analysis reports and pipeline diagnostics are
+preserved. Source checkpoint and adapter hashes, shared corpus hashes and stage
+manifests reject stale reuse. Source LoRA training is never called by this command.
+
+After all three PopQA evaluations finish:
+
+```bash
+"$PYTHON_BIN" scripts/summarize_factual_popqa.py
+cat outputs/factual_popqa/summary/summary.md
+```
+
+The summary requires every planned seed and exactly the same saved target pool;
+it reports per-seed intervals plus descriptive seed means/SD. There is no combined
+interval treating repeated seed-question observations as independent. Keep the
+negative TruthfulQA reference-ranking findings and all length controls when finalizing.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized

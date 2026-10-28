@@ -16,10 +16,10 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 CONFIG=${1:-configs/factual_shift.yaml}
 COMMAND=${2:-run-factual-shift}
-if [[ "$COMMAND" != "run-factual-shift" && "$COMMAND" != "analyze-factual-shift" && "$COMMAND" != "repair-factual-shift" && "$COMMAND" != "audit-factual-shift" && "$COMMAND" != "within-question-factual-shift" && "$COMMAND" != "final-checks-factual-shift" && "$COMMAND" != "run-study-factual-shift" ]]; then
-  echo "Unsupported factual-shift command: $COMMAND" >&2
-  exit 2
-fi
+case "$COMMAND" in
+  run-factual-shift|analyze-factual-shift|repair-factual-shift|audit-factual-shift|within-question-factual-shift|final-checks-factual-shift|run-study-factual-shift|run-popqa-factual-shift) ;;
+  *) echo "Unsupported factual-shift command: $COMMAND" >&2; exit 2 ;;
+esac
 HALOSCOPE_DIR=${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}
 DEFAULT_PYTHON="$PWD/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON" ]]; then
