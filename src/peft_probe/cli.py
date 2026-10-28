@@ -318,19 +318,21 @@ def main() -> None:
             print(factual.repair_features(config), flush=True)
             print(factual.analyze(config), flush=True)
         else:
-            print(factual.prepare(config, args.force), flush=True)
-            print(factual.prepare_negatives(config, args.force), flush=True)
+            from .factual_runtime import stage
+
+            print(stage("prepare", factual.prepare, config, args.force), flush=True)
+            print(stage("negatives", factual.prepare_negatives, config, args.force), flush=True)
             for adapter in factual.ADAPTERS:
-                print(factual.train(config, adapter, args.force), flush=True)
+                print(stage(f"train/{adapter}", factual.train, config, adapter, args.force), flush=True)
                 factual._release()
-            print(factual.collect_candidates(config, args.force), flush=True)
+            print(stage("candidates", factual.collect_candidates, config, args.force), flush=True)
             for source in factual.SOURCES:
-                print(factual.collect_features(config, source, args.force), flush=True)
-            print(factual.analyze(config, args.force), flush=True)
+                print(stage(f"features/{source}", factual.collect_features, config, source, args.force), flush=True)
+            print(stage("analysis", factual.analyze, config, args.force), flush=True)
             if args.command == "run-study-factual-shift":
                 from .factual_final import analyze_final_checks
 
-                print(analyze_final_checks(config, args.force), flush=True)
+                print(stage("final_checks", analyze_final_checks, config, args.force), flush=True)
         return
     initialize_output(config)
     if args.command == "validate":

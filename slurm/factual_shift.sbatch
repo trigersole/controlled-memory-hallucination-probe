@@ -36,6 +36,14 @@ export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
 export MKL_NUM_THREADS=$OMP_NUM_THREADS
 export NUMEXPR_NUM_THREADS=$OMP_NUM_THREADS
 mkdir -p slurm/logs
+RUN_LOG="slurm/logs/factual-run-${SLURM_JOB_ID:-local}.log"
+STATUS_LOG="slurm/logs/factual-run-${SLURM_JOB_ID:-local}.status"
+record_exit() {
+  local status=$?
+  printf 'exit_code=%s\ncommand=%s\nconfig=%s\n' "$status" "$COMMAND" "$CONFIG" > "$STATUS_LOG" || true
+  echo "[launcher] Exit code: $status; status: $STATUS_LOG; combined log: $RUN_LOG"
+}
+trap record_exit EXIT
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python is not executable: $PYTHON_BIN. Set PYTHON_BIN to your experiment environment." >&2
@@ -69,12 +77,13 @@ requeue_current() {
 trap requeue_current USR1
 
 echo "Starting $COMMAND with config $CONFIG"
-"$PYTHON_BIN" -m peft_probe --config "$CONFIG" "$COMMAND" &
+echo "Combined process log: $RUN_LOG"
+"$PYTHON_BIN" -u scripts/run_factual_job.py --config "$CONFIG" "$COMMAND" > >(tee -a "$RUN_LOG") 2>&1 &
 CHILD_PID=$!
 if wait "$CHILD_PID"; then
   echo "$COMMAND completed successfully."
 else
   STATUS=$?
-  echo "$COMMAND failed with exit code $STATUS; see analysis_progress.json and analysis_failure.json in results/." >&2
+  echo "$COMMAND failed with exit code $STATUS; see pipeline_progress.json and pipeline_failure.json in factual_shift_v1/ and $RUN_LOG." >&2
   exit "$STATUS"
 fi

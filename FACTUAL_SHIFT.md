@@ -74,6 +74,18 @@ interrupted analysis to resume. Feature matrices are released after fitting, and
 CPU library threads are limited to the allocated CPUs. The final report remains
 `results/summary.md`; intermediate checkpoints are not completed experimental results.
 
+The factual launcher also records whole-pipeline diagnostics directly under
+`factual_shift_v1/`: `pipeline_progress.json` (last stage and minute heartbeat),
+`pipeline_failure.json` (caught Python exception or unsuccessful `SystemExit`), and
+`pipeline_events.jsonl` (attempt/stage history). CLI import failures are guarded too.
+Candidate collection prints shard starts/completions. The combined Python stdout/
+stderr stream is copied to `slurm/logs/factual-run-<SLURM_JOB_ID>.log`; the launcher
+writes its exit code to the adjacent `.status` file. Python output is merged into
+the scheduler `.out` log, while launcher failures also appear in `.err`.
+Hard process/node kills can prevent final diagnostics; an unfinished heartbeat is
+not proof of a Python exception. Compare those cases with scheduler accounting.
+Diagnostics do not change experiment configurations or invalidate saved adapters.
+
 If PyTorch reports `failed finding central directory`, a saved archive is unreadable.
 The analysis now includes the exact feature filename in its error. You can audit
 every feature shard, including directories carrying `_SUCCESS.json`, using

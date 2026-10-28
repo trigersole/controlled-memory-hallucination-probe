@@ -450,6 +450,7 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         if path.exists() and not force:
             continue
         seed_everything(int(config["experiment"]["seed"]) + shard + 2000)
+        print(f"[candidates] Starting shard {shard}: {len(batch)} questions", flush=True)
         records = []
         for _, group in chunks(batch, int(settings["batch_size"])):
             reference_rows = [r for r in group if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"]
@@ -473,6 +474,7 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
                         }
                     )
         atomic_jsonl(path, records)
+        print(f"[candidates] Saved shard {shard}: {len(records)} answers", flush=True)
     del model
     _release()
     records = [r for p in sorted(target.glob("shard_*.jsonl")) for r in read_jsonl(p)]

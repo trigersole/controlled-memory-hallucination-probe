@@ -21,6 +21,8 @@ if [[ ! -x "$DEFAULT_PYTHON" ]]; then
   DEFAULT_PYTHON="${HALOSCOPE_DIR:-$HOME/LLM_Haloscope}/.venv/bin/python"
 fi
 PYTHON_BIN=${HALOSCOPE_PYTHON:-${PYTHON_BIN:-$DEFAULT_PYTHON}}
+echo "Study wrapper starting: job ${SLURM_JOB_ID:-unknown}; array task ${SLURM_ARRAY_TASK_ID:-missing}; manifest $MANIFEST"
+trap 'status=$?; echo "Study wrapper failed at line $LINENO with exit code $status" >&2' ERR
 CONFIG=$("$PYTHON_BIN" - "$MANIFEST" "$SLURM_ARRAY_TASK_ID" <<'PY'
 import hashlib
 import json
