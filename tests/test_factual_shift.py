@@ -318,16 +318,27 @@ def test_reference_ood_uses_labels_and_removes_conflicts_without_generated_gradi
 def test_reference_collection_does_not_generate_for_ood_and_resumes(tmp_path, monkeypatch):
     cfg = config(tmp_path)
     cfg["factual_shift"]["ood_candidate_mode"] = "references"
+    cfg["factual_shift"]["shard_size"] = 1
     rows = [
         {"fact_id": "validation1", "split": "validation", "question": "Q1", "aliases": ["yes"],
          "answer": "yes", "benchmark": "trivia_qa"},
         {"fact_id": "ood1", "split": "ood", "question": "Q2", "aliases": ["yes"],
          "incorrect_answers": ["no"], "answer": "yes", "benchmark": "truthful_qa"},
+        {"fact_id": "truthful_27", "split": "ood", "question": "Q3", "aliases": ["yes"],
+         "incorrect_answers": ["yes!"], "answer": "yes", "benchmark": "truthful_qa"},
     ]
     monkeypatch.setattr(fs, "_stage", lambda *args: tmp_path)
     monkeypatch.setattr(fs, "_read_data", lambda cfg: rows)
     monkeypatch.setattr(fs, "load_tokenizer", lambda cfg: None)
     monkeypatch.setattr(fs, "load_base_model", lambda cfg: SimpleNamespace(eval=lambda: None))
+    # Simulate a run stopped at the invalid OOD question, with generation already saved.
+    old_shard = tmp_path / "shard_00000.jsonl"
+    fs.atomic_jsonl(old_shard, [
+        {**rows[0], "correct": 1, "grade_status": "normalized_exact_match", "candidate_index": i,
+         "row_id": f"validation1:{i}"}
+        for i in range(cfg["factual_shift"]["samples_per_question"])
+    ])
+    original = old_shard.read_bytes()
 
     def generate(m, t, group, settings, sample):
         assert all(row["split"] != "ood" for row in group)
@@ -338,8 +349,32 @@ def test_reference_collection_does_not_generate_for_ood_and_resumes(tmp_path, mo
     records = [r for p in tmp_path.glob("shard_*.jsonl") for r in fs.read_jsonl(p)]
     assert len(records) == cfg["factual_shift"]["samples_per_question"] + 2
     assert {r["correct"] for r in records if r["split"] == "ood"} == {0, 1}
+    assert old_shard.read_bytes() == original
+    audit = json.loads((tmp_path / "reference_eligibility.json").read_text())
+    assert (audit["n_requested"], audit["n_eligible"], audit["n_excluded"]) == (2, 1, 1)
+    assert audit["excluded"][0]["fact_id"] == "truthful_27"
+    assert not fs.read_jsonl(tmp_path / "shard_00002.jsonl")
     monkeypatch.setattr(fs, "load_base_model", lambda *args: pytest.fail("Must resume"))
     fs.collect_candidates(cfg)
+
+
+def test_all_invalid_reference_questions_fail_before_model_loading(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    cfg["factual_shift"]["ood_candidate_mode"] = "references"
+    rows = [{"fact_id": "truthful_27", "split": "ood", "question": "Q", "aliases": ["yes"],
+             "incorrect_answers": ["yes!"], "answer": "yes"}]
+    monkeypatch.setattr(fs, "_stage", lambda *args: tmp_path)
+    monkeypatch.setattr(fs, "_read_data", lambda cfg: rows)
+    monkeypatch.setattr(fs, "load_base_model", lambda cfg: pytest.fail("Preflight must run first"))
+    with pytest.raises(ValueError, match="No eligible OOD"):
+        fs.collect_candidates(cfg)
+    assert not (tmp_path / "_SUCCESS.json").exists()
+    assert json.loads((tmp_path / "reference_eligibility.json").read_text())["n_excluded"] == 1
+
+
+def test_reference_eligibility_does_not_hide_malformed_input():
+    with pytest.raises(KeyError):
+        fs.reference_eligibility([{"split": "ood", "fact_id": "bad", "question": "Q"}], 3, 44)
 
 
 def test_confirmatory_method_is_fixed_and_length_sign_uses_validation_only(tmp_path, monkeypatch):

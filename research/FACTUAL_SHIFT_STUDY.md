@@ -103,7 +103,9 @@ entirely untouched benchmark or rule out pretraining contamination.
 
 Use the existing TruthfulQA generation dataset's supplied correct and incorrect
 reference answers, up to three distinct normalized answers per class per question.
-Remove exact normalized conflicts across classes; fail if no mixed pair remains.
+Remove exact normalized conflicts across classes. Exclude questions with no mixed
+pair remaining and report their IDs, reasons, and requested/eligible denominators;
+fail the OOD task if no eligible questions remain. Do not backfill excluded questions.
 Choose references in dataset order without consulting detector scores, then shuffle
 candidate order deterministically. Score every candidate with the same base/A/B/
 incorrect teacher-forced replay used for generated TriviaQA candidates.
@@ -122,6 +124,16 @@ new two-choice setting, and note dated/invalid questions in their change log:
 [TruthfulQA official repository](https://github.com/sylinrl/TruthfulQA).
 
 ## Interpretation after all planned runs finish
+
+Implementation amendment, 2026-10-28: an affected seed stopped at candidate
+construction because `truthful_27` had no usable mixed reference pair. The original
+implementation aborted the entire run for that condition. The amended rule excludes
+only such label-ineligible questions before candidate scoring, with a saved audit,
+and preserves original shard boundaries and completed training/generation artifacts.
+This changes eligibility handling after a failure, not based on detector performance.
+It must be disclosed alongside the frozen plan. Previously completed seed 43 is
+left unchanged; its completed reference pool had no question triggering this failure.
+Affected reports explicitly show both requested and eligible OOD question counts.
 
 Report results irrespective of sign. A replicating above-chance within-question
 effect supports answer-specific predictive information for the evaluated pool.

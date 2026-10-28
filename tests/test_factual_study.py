@@ -119,3 +119,28 @@ def test_aggregate_rejects_invalid_or_uninformative_confirmation(tmp_path, fault
     _json(path, report)
     with pytest.raises(ValueError):
         study["aggregate"](manifest)
+
+
+def test_aggregate_preserves_exclusions_and_groups_seed_specific_pca_choices(tmp_path):
+    manifest, _ = create_study(tmp_path)
+    plan = completed_reports(manifest)
+    for run in plan["runs"]:
+        path = Path(run["output_dir"]) / "factual_shift_v1/results/within_question_final/metrics.json"
+        report = json.loads(path.read_text())
+        report["reference_eligibility"] = {
+            "n_requested": 21, "n_eligible": 20, "n_excluded": 1,
+            "excluded": [{"fact_id": "truthful_27", "reason": "no usable pair"}],
+        }
+        for dataset in report["datasets"].values():
+            name = f"-{run['seed']}/activation_pca/energy_4"
+            dataset["methods"][name] = {"within_question_pairwise_accuracy": 0.7}
+            dataset["paired_comparisons"].append({"left": PRIMARY, "right": name,
+                                                  "mean": 0.1, "ci95": [0, 0.2]})
+        _json(path, report)
+    output = study["aggregate"](manifest)
+    metrics = json.loads((output / "metrics.json").read_text())
+    pca = [r for r in metrics["descriptive"] if r["method"] == "Activation PCA (validation-selected)"]
+    assert len(pca) == 2
+    assert all(row["seed_sd"] == 0 and row["mean"] == 0.7 for row in pca)
+    assert len(metrics["reference_eligibility"]) == 3
+    assert "truthful_27" in (output / "summary.md").read_text()

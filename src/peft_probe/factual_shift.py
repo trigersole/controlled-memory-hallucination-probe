@@ -443,6 +443,17 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         if r["split"] not in {"adapter_a", "adapter_b", "direction_fit"}
     ]
     settings = {**validate(config), "max_sequence_length": config["model"]["max_sequence_length"]}
+    reference_pool = {}
+    eligibility = None
+    if settings.get("ood_candidate_mode") == "references":
+        reference_pool, eligibility = reference_eligibility(
+            rows, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"])
+        )
+        atomic_json(target / "reference_eligibility.json", eligibility)
+        print(f"[candidates] OOD reference eligibility: {eligibility['n_eligible']}/{eligibility['n_requested']}; "
+              f"excluded {eligibility['n_excluded']} questions (see reference_eligibility.json)", flush=True)
+        if eligibility["n_requested"] and not eligibility["n_eligible"]:
+            raise ValueError("No eligible OOD reference questions; see reference_eligibility.json")
     tokenizer = load_tokenizer(config["model"])
     model = load_base_model(config["model"]).eval()
     for shard, batch in chunks(rows, int(settings["shard_size"])):
@@ -455,7 +466,7 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         for _, group in chunks(batch, int(settings["batch_size"])):
             reference_rows = [r for r in group if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"]
             for row in reference_rows:
-                records.extend(reference_candidates(row, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"])))
+                records.extend(reference_pool[row["fact_id"]])
             group = [r for r in group if r not in reference_rows]
             if not group:
                 continue
@@ -482,15 +493,35 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         record["row_id"]
         for r in rows
         for record in (
-            reference_candidates(r, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"]))
+            reference_pool[r["fact_id"]]
             if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"
             else [{"row_id": f"{r['fact_id']}:{i}"} for i in range(int(settings["samples_per_question"]))]
         )
     }
     if len(records) != len(expected) or {r["row_id"] for r in records} != expected:
         raise ValueError("Candidate shards do not match prepared questions")
-    _complete(target, {"num_candidates": len(records), "rows_sha256": _digest(records)})
+    _complete(target, {"num_candidates": len(records), "rows_sha256": _digest(records),
+                       **({"reference_eligibility": eligibility} if eligibility is not None else {})})
     return target
+
+
+class NoMixedReferenceAnswers(ValueError):
+    """The supplied reference labels cannot form an unambiguous mixed question."""
+
+
+def reference_eligibility(rows: list[dict], per_class: int, seed: int) -> tuple[dict, dict]:
+    pool, excluded = {}, []
+    for row in rows:
+        if row["split"] != "ood":
+            continue
+        try:
+            pool[row["fact_id"]] = reference_candidates(row, per_class, seed)
+        except NoMixedReferenceAnswers as exc:
+            pool[row["fact_id"]] = []
+            excluded.append({"fact_id": row["fact_id"], "question": row["question"], "reason": str(exc)})
+    return pool, {"schema_version": 1, "rule": "exclude_questions_without_both_classes_after_normalization_and_conflict_removal",
+                  "n_requested": len(pool), "n_eligible": len(pool) - len(excluded),
+                  "n_excluded": len(excluded), "excluded": excluded}
 
 
 def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
@@ -507,7 +538,7 @@ def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
         positive.pop(key)
         negative.pop(key)
     if not positive or not negative:
-        raise ValueError(f"No unambiguous mixed reference answers: {row['fact_id']}")
+        raise NoMixedReferenceAnswers(f"No unambiguous mixed reference answers after normalization and conflict removal: {row['fact_id']}")
     # Select without detector scores, then shuffle to avoid label-dependent tie order.
     pairs = [(a, label) for label, table in ((1, positive), (0, negative)) for a in list(table.values())[:per_class]]
     digest = hashlib.sha256(f"{seed}:{row['fact_id']}".encode()).digest()

@@ -152,6 +152,12 @@ OOD now ranks benchmark-supplied correct and incorrect TruthfulQA reference answ
 a **reference-ranking task**, not a repair of generated-answer labels or an official
 TruthfulQA multiple-choice metric. The pilot's uninformative generated-answer OOD
 result remains a limitation. Reference-answer wording and length can be confounds.
+Questions lacking a correct/incorrect pair after reference normalization and conflict
+removal are excluded before generation/scoring. Their IDs, reasons and requested/
+eligible counts are saved in `candidates/reference_eligibility.json` and included in
+the final reports. No replacement questions are sampled. If all OOD questions are
+ineligible, the run fails explicitly. This amendment is documented in the protocol.
+Existing candidate shard boundaries and saved adapters remain reusable on retry.
 
 After **all** planned seeds finish:
 

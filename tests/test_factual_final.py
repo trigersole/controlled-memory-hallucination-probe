@@ -148,7 +148,10 @@ def test_paired_intervals_use_same_alias_cluster_draws():
     assert report["paired_comparisons"][0]["ci95"] == [0, 0]
 
 
-def test_final_report_uses_only_cache_and_preserves_original_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_audit", [False, True])
+def test_final_report_uses_only_cache_and_preserves_original_files(
+    tmp_path, monkeypatch, with_audit
+):
     cached, metrics, rows, predictions = saved_run()
     config = {"experiment": {"seed": 42}, "factual_shift": {"bootstrap_samples": 50}}
     results = tmp_path / "results"
@@ -166,6 +169,16 @@ def test_final_report_uses_only_cache_and_preserves_original_files(tmp_path, mon
     (results / "predictions.jsonl").write_text("\n".join(json.dumps(r) for r in predictions))
     (results / "within_question").mkdir()
     (results / "within_question" / "summary.md").write_text("original diagnostic")
+    audit = {
+        "n_requested": 2,
+        "n_eligible": 1,
+        "n_excluded": 1,
+        "excluded": [{"fact_id": "truthful_27", "reason": "no mixed reference pair"}],
+    }
+    if with_audit:
+        candidates = tmp_path / "candidates"
+        candidates.mkdir()
+        (candidates / "reference_eligibility.json").write_text(json.dumps(audit))
     before = {p: p.read_bytes() for p in results.rglob("*") if p.is_file()}
     monkeypatch.setattr(factual, "root", lambda cfg: tmp_path)
     monkeypatch.setattr(factual, "_replay_rows", lambda cfg: rows)
@@ -178,6 +191,10 @@ def test_final_report_uses_only_cache_and_preserves_original_files(tmp_path, mon
     assert "incorrect control" in text
     assert all(p.read_bytes() == original for p, original in before.items())
     report = json.loads((output / "metrics.json").read_text())
+    assert report["reference_eligibility"] == (audit if with_audit else None)
+    if with_audit:
+        assert "1/2 questions" in text
+        assert "reference_eligibility_sha256" in report["signature"]
     assert report["datasets"]["test"]["paired_comparisons"][1]["mean"] == 1
     config["experiment"]["seed"] = 43
     with pytest.raises(ValueError, match="Checkpoint inputs changed"):

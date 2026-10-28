@@ -180,7 +180,14 @@ def aggregate(manifest: Path) -> Path:
                 comparisons.append({"seed": entry["seed"], "split": split, **item})
             for name, item in dataset["methods"].items():
                 if "activation_pca" in name or name.endswith(("/supervised_probe", "/random/base")):
-                    values.setdefault((split, name), []).append(
+                    role = (
+                        "Activation PCA (validation-selected)"
+                        if "activation_pca" in name
+                        else "Supervised probe (primary layer)"
+                        if name.endswith("/supervised_probe")
+                        else "Random direction (primary layer)"
+                    )
+                    values.setdefault((split, role), []).append(
                         item["within_question_pairwise_accuracy"]
                     )
                     comparisons.append(
@@ -200,6 +207,19 @@ def aggregate(manifest: Path) -> Path:
         mean, sd = statistics.mean(scores), statistics.stdev(scores)
         descriptive.append({"split": split, "method": method, "mean": mean, "seed_sd": sd})
         lines.append(f"| {split} | {method} | {mean:.4f} | {sd:.4f} |")
+    lines.extend(["", "OOD reference eligibility (label-only exclusions before scoring):", ""])
+    for entry in entries:
+        audit = entry["report"].get("reference_eligibility")
+        if audit is None:
+            lines.append(
+                f"Seed {entry['seed']}: no eligibility audit in this older completed report; see its candidate counts."
+            )
+        else:
+            lines.append(
+                f"Seed {entry['seed']}: {audit['n_eligible']}/{audit['n_requested']} eligible; "
+                f"{audit['n_excluded']} excluded. IDs: "
+                + ", ".join(r["fact_id"] for r in audit["excluded"])
+            )
     lines.extend(
         [
             "",
@@ -229,7 +249,15 @@ def aggregate(manifest: Path) -> Path:
     (output / "_SUCCESS.json").unlink(missing_ok=True)
     _json(
         output / "metrics.json",
-        {"signature": signature, "descriptive": descriptive, "paired_comparisons": comparisons},
+        {
+            "signature": signature,
+            "descriptive": descriptive,
+            "paired_comparisons": comparisons,
+            "reference_eligibility": [
+                {"seed": e["seed"], "audit": e["report"].get("reference_eligibility")}
+                for e in entries
+            ],
+        },
     )
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     _json(output / "_SUCCESS.json", {"complete": True, "signature": signature})

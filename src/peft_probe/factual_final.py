@@ -143,6 +143,12 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
     heldout, methods, comparisons, selections = frozen_rows(
         cached, metrics, rows, list(_read_rows(predictions_path))
     )
+    eligibility_path = results.parent / "candidates" / "reference_eligibility.json"
+    eligibility = (
+        json.loads(eligibility_path.read_text(encoding="utf-8"))
+        if eligibility_path.exists()
+        else None
+    )
     samples = int(config["factual_shift"]["bootstrap_samples"])
     seed = int(config["experiment"]["seed"])
     provenance = {
@@ -154,6 +160,8 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         "bootstrap_samples": samples,
         "seed": seed,
     }
+    if eligibility is not None:
+        provenance["reference_eligibility_sha256"] = _sha(eligibility_path)
     output = results / "within_question_final"
     manifest = output / "_MANIFEST.json"
     if (
@@ -181,6 +189,17 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         "Reference-mode OOD scores rank benchmark-supplied answers; they do not measure generated-answer detection.",
         "",
     ]
+    if eligibility is not None:
+        lines.extend(
+            [
+                (
+                    f"OOD reference eligibility before scoring: {eligibility['n_eligible']}/{eligibility['n_requested']} questions; "
+                    f"{eligibility['n_excluded']} excluded without an unambiguous mixed reference pair."
+                ),
+                "Exclusion IDs and reasons are recorded in candidates/reference_eligibility.json.",
+                "",
+            ]
+        )
     for split in ("test", "ood"):
         subset = [r for r in heldout if r["split"] == split]
         if not subset:
@@ -231,6 +250,7 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
             "datasets": datasets,
             "selection_rule": metrics.get("selection_rule", "validation_auroc"),
             "ood_candidate_mode": metrics.get("ood_candidate_mode", "generated"),
+            "reference_eligibility": eligibility,
         },
     )
     _json(output / "per_question.json", question_rows)
