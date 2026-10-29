@@ -168,6 +168,12 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         if eligibility_path.exists()
         else None
     )
+    input_eligibility_path = results.parent / "data" / "reference_eligibility.json"
+    input_eligibility = (
+        json.loads(input_eligibility_path.read_text(encoding="utf-8"))
+        if input_eligibility_path.exists()
+        else None
+    )
     samples = int(config["factual_shift"]["bootstrap_samples"])
     seed = int(config["experiment"]["seed"])
     provenance = {
@@ -181,6 +187,8 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
     }
     if eligibility is not None:
         provenance["reference_eligibility_sha256"] = _sha(eligibility_path)
+    if input_eligibility is not None:
+        provenance["input_reference_eligibility_sha256"] = _sha(input_eligibility_path)
     output = results / "within_question_final"
     manifest = output / "_MANIFEST.json"
     if (
@@ -200,6 +208,10 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
             {"signature": provenance, "models": length_models},
         )
     datasets, question_rows = {}, []
+    group_label = {
+        "subject": "subject/question groups",
+        "question_source": "question/reference-URL groups",
+    }.get(metrics.get("split_grouping"), "question/alias groups")
     lines = [
         "# Final within-question checks",
         "",
@@ -208,16 +220,13 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         f"Validation-selected incorrect control: `{selections['incorrect_validation_selected']}`",
         f"Matched geometry control: `{selections['incorrect_matched_geometry']}`",
         f"Training/evaluation dataset: {metrics.get('dataset', 'not recorded in older source metrics')}",
+        f"Candidate task: {metrics.get('candidate_mode', 'generated')} (reference answers are not model generations)",
         f"Bootstrap split grouping: {metrics.get('split_grouping', 'question_alias')}",
         f"Selection rule: {metrics.get('selection_rule', 'validation_auroc')}",
         f"OOD candidate mode: {metrics.get('ood_candidate_mode', 'generated')}",
         "",
         "All methods use the same mixed questions, original validation signs and half credit for ties.",
-        (
-            "Questions have equal weight; paired 95% intervals resample subject/question groups."
-            if metrics.get("split_grouping") == "subject"
-            else "Questions have equal weight; paired 95% intervals resample question/alias groups."
-        ),
+        f"Questions have equal weight; paired 95% intervals resample {group_label}.",
         "Reference-mode OOD scores rank benchmark-supplied answers; they do not measure generated-answer detection.",
         "",
     ]
@@ -225,7 +234,7 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         lines.extend(
             [
                 (
-                    f"OOD reference eligibility before scoring: {eligibility['n_eligible']}/{eligibility['n_requested']} questions; "
+                    f"Reference eligibility before scoring: {eligibility['n_eligible']}/{eligibility['n_requested']} questions; "
                     f"{eligibility['n_excluded']} excluded without an unambiguous mixed reference pair."
                 ),
                 "Exclusion IDs and reasons are recorded in candidates/reference_eligibility.json.",
@@ -237,6 +246,14 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
             [
                 "Length-adjustment heads use only this run's probe_train labels, fixed quadratic log-word-length features and C=1.",
                 "The joint head additionally uses the frozen primary score; test labels never fit or tune either head.",
+                "",
+            ]
+        )
+    if input_eligibility is not None:
+        lines.extend(
+            [
+                (f"Dataset reference preflight: {input_eligibility['n_eligible']}/{input_eligibility['n_requested']} eligible; "
+                 f"{input_eligibility['n_excluded']} excluded before splitting (data/reference_eligibility.json)."),
                 "",
             ]
         )
@@ -291,7 +308,9 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
             "selection_rule": metrics.get("selection_rule", "validation_auroc"),
             "ood_candidate_mode": metrics.get("ood_candidate_mode", "generated"),
             "reference_eligibility": eligibility,
+            "input_reference_eligibility": input_eligibility,
             "dataset": metrics.get("dataset"),
+            "candidate_mode": metrics.get("candidate_mode", "generated"),
             "split_grouping": metrics.get("split_grouping", "question_alias"),
             "length_adjustment": length_models is not None,
         },

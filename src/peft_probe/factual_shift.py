@@ -1,4 +1,4 @@
-"""Isolated TriviaQA experiment: does the largest LoRA activation change predict truth?
+"""Isolated factual-QA experiment: do LoRA activation changes predict correctness?
 
 All models replay the same saved text. SVD uses only direction-fit questions;
 orientations and method selection use validation labels, never test/OOD labels.
@@ -48,10 +48,18 @@ def validate(config: dict[str, Any]) -> dict[str, Any]:
     settings = config["factual_shift"]
     if settings.get("schema_version") != SCHEMA:
         raise ValueError(f"Expected factual_shift.schema_version={SCHEMA}")
-    if settings["dataset"] not in {"mandarjoshi/trivia_qa", "akariasai/PopQA"}:
-        raise ValueError("Factual training supports TriviaQA or PopQA")
-    if settings.get("split_grouping", "question_alias") not in {"question_alias", "subject"}:
-        raise ValueError("split_grouping must be question_alias or subject")
+    if settings["dataset"] not in {"mandarjoshi/trivia_qa", "akariasai/PopQA", "truthfulqa/truthful_qa"}:
+        raise ValueError("Factual training supports TriviaQA, PopQA or TruthfulQA")
+    if settings.get("split_grouping", "question_alias") not in {"question_alias", "subject", "question_source"}:
+        raise ValueError("split_grouping must be question_alias, subject or question_source")
+    if settings.get("candidate_mode", "generated") not in {"generated", "references"}:
+        raise ValueError("candidate_mode must be generated or references")
+    if settings.get("negative_source", "generated") not in {"generated", "references"}:
+        raise ValueError("negative_source must be generated or references")
+    if settings["dataset"] == "truthfulqa/truthful_qa" and (
+        settings.get("candidate_mode") != "references" or settings.get("negative_source") != "references"
+    ):
+        raise ValueError("TruthfulQA in-domain training requires reference candidates and reference incorrect targets")
     for key in (
         "batch_size",
         "shard_size",
@@ -185,6 +193,9 @@ def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int,
             keys.append(("s", str(row["subject_id"])))
         elif grouping == "question_alias":
             keys += [("a", _normal(a)) for a in row["aliases"] if _normal(a)]
+        elif grouping == "question_source":
+            if row.get("source_url"):
+                keys.append(("source", str(row["source_url"]).strip()))
         else:
             raise ValueError("Unknown split grouping")
         for key in keys:
@@ -221,10 +232,16 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
     if (target / "_SUCCESS.json").exists() and not force:
         return target
     settings = validate(config)
+    eligibility = None
     if settings["dataset"] == "akariasai/PopQA":
         dataset = load_dataset(settings["dataset"], split=settings["dataset_split"],
                                revision=settings.get("dataset_revision", "main"))
         items = popqa_training_items(dataset)
+    elif settings["dataset"] == "truthfulqa/truthful_qa":
+        dataset = load_dataset(settings["dataset"], "generation", split=settings["dataset_split"],
+                               revision=settings.get("dataset_revision", "main"))
+        items, eligibility = truthful_training_items(dataset)
+        atomic_json(target / "reference_eligibility.json", eligibility)
     else:
         dataset = load_dataset(settings["dataset"], settings["dataset_config"], split=settings["dataset_split"])
         items = trivia_training_items(dataset)
@@ -235,6 +252,8 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
     metadata = {"dataset": settings["dataset"], "dataset_fingerprint": getattr(dataset, "_fingerprint", None),
                 "split_grouping": grouping, "input_questions": input_rows, "unique_questions": len(items),
                 "duplicate_rows_collapsed": input_rows - len(items)}
+    if eligibility is not None:
+        metadata["reference_eligibility"] = eligibility
     if settings["dataset"] == "mandarjoshi/trivia_qa":
         metadata.update(trivia_input_rows=input_rows, trivia_unique_questions=len(items),
                         trivia_duplicate_rows_collapsed=input_rows - len(items))
@@ -311,6 +330,29 @@ def _read_data(config) -> list[dict]:
     return read_jsonl(target / "rows.jsonl")
 
 
+def truthful_training_items(dataset) -> tuple[list[dict], dict]:
+    items, excluded = [], []
+    for i, raw in enumerate(dataset):
+        row = {"fact_id": f"truthful_{i}", "question": str(raw["question"]),
+               "answer": str(raw["best_answer"]),
+               "aliases": list(dict.fromkeys([str(raw["best_answer"]), *raw["correct_answers"]])),
+               "incorrect_answers": list(raw["incorrect_answers"]), "benchmark": "truthful_qa",
+               "source_url": str(raw.get("source", "")).strip(), "category": str(raw.get("category", ""))}
+        if not _normal(row["question"]):
+            raise ValueError(f"Invalid TruthfulQA question {i}")
+        try:
+            positive, negative = clean_reference_answers(row)
+        except NoMixedReferenceAnswers as exc:
+            excluded.append({"fact_id": row["fact_id"], "question": row["question"], "reason": str(exc)})
+            continue
+        canonical = positive.get(_normal(row["answer"]), next(iter(positive.values())))
+        items.append({**row, "answer": canonical, "aliases": list(positive.values()),
+                      "incorrect_answers": list(negative.values())})
+    return items, {"schema_version": 1, "n_requested": len(items) + len(excluded), "n_eligible": len(items),
+                   "n_excluded": len(excluded), "excluded": excluded,
+                   "rule": "exclude_without_both_reference_classes_after_normalization_and_conflict_removal"}
+
+
 def _prompt(question: str) -> str:
     return "Answer with only the short answer. " + question
 
@@ -357,12 +399,22 @@ def _release() -> None:
 
 
 def prepare_negatives(config: dict, force: bool = False) -> Path:
-    """Save model-generated wrong-answer candidates; never silently use donor answers."""
+    """Save matched wrong targets: generated by default, or explicit benchmark references."""
     target = _stage(config, "negatives", force)
     if (target / "_SUCCESS.json").exists() and not force:
         return target
     rows = [r for r in _read_data(config) if r["split"] == "adapter_a"]
     settings = {**validate(config), "max_sequence_length": config["model"]["max_sequence_length"]}
+    if settings.get("negative_source") == "references":
+        accepted = []
+        for row in rows:
+            _, negative = clean_reference_answers(row)
+            accepted.append({**row, "negative_answer": next(iter(negative.values())),
+                             "negative_kind": "benchmark_reference_incorrect"})
+        atomic_jsonl(target / "rows.jsonl", accepted)
+        _complete(target, {"accepted": len(accepted), "requested": len(rows),
+                           "negative_source": "benchmark_reference_incorrect"})
+        return target
     tokenizer = load_tokenizer(config["model"])
     model = load_base_model(config["model"]).eval()
     for shard, batch in chunks(rows, int(settings["batch_size"])):
@@ -481,17 +533,18 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
     settings = {**validate(config), "max_sequence_length": config["model"]["max_sequence_length"]}
     reference_pool = {}
     eligibility = None
-    if settings.get("ood_candidate_mode") == "references":
+    all_references = settings.get("candidate_mode") == "references"
+    if all_references or settings.get("ood_candidate_mode") == "references":
         reference_pool, eligibility = reference_eligibility(
-            rows, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"])
+            rows, int(settings.get("ood_references_per_class", 3)), int(config["experiment"]["seed"]), all_splits=all_references
         )
         atomic_json(target / "reference_eligibility.json", eligibility)
-        print(f"[candidates] OOD reference eligibility: {eligibility['n_eligible']}/{eligibility['n_requested']}; "
+        print(f"[candidates] Reference eligibility: {eligibility['n_eligible']}/{eligibility['n_requested']}; "
               f"excluded {eligibility['n_excluded']} questions (see reference_eligibility.json)", flush=True)
         if eligibility["n_requested"] and not eligibility["n_eligible"]:
-            raise ValueError("No eligible OOD reference questions; see reference_eligibility.json")
-    tokenizer = load_tokenizer(config["model"])
-    model = load_base_model(config["model"]).eval()
+            raise ValueError("No eligible OOD/reference questions; see reference_eligibility.json")
+    tokenizer = load_tokenizer(config["model"]) if not all_references else None
+    model = load_base_model(config["model"]).eval() if not all_references else None
     for shard, batch in chunks(rows, int(settings["shard_size"])):
         path = target / f"shard_{shard:05d}.jsonl"
         if path.exists() and not force:
@@ -500,7 +553,7 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         print(f"[candidates] Starting shard {shard}: {len(batch)} questions", flush=True)
         records = []
         for _, group in chunks(batch, int(settings["batch_size"])):
-            reference_rows = [r for r in group if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"]
+            reference_rows = [r for r in group if all_references or (r["split"] == "ood" and settings.get("ood_candidate_mode") == "references")]
             for row in reference_rows:
                 records.extend(reference_pool[row["fact_id"]])
             group = [r for r in group if r not in reference_rows]
@@ -530,7 +583,7 @@ def collect_candidates(config: dict, force: bool = False) -> Path:
         for r in rows
         for record in (
             reference_pool[r["fact_id"]]
-            if r["split"] == "ood" and settings.get("ood_candidate_mode") == "references"
+            if all_references or (r["split"] == "ood" and settings.get("ood_candidate_mode") == "references")
             else [{"row_id": f"{r['fact_id']}:{i}"} for i in range(int(settings["samples_per_question"]))]
         )
     }
@@ -545,10 +598,10 @@ class NoMixedReferenceAnswers(ValueError):
     """The supplied reference labels cannot form an unambiguous mixed question."""
 
 
-def reference_eligibility(rows: list[dict], per_class: int, seed: int) -> tuple[dict, dict]:
+def reference_eligibility(rows: list[dict], per_class: int, seed: int, all_splits: bool = False) -> tuple[dict, dict]:
     pool, excluded = {}, []
     for row in rows:
-        if row["split"] != "ood":
+        if row["split"] != "ood" and not all_splits:
             continue
         try:
             pool[row["fact_id"]] = reference_candidates(row, per_class, seed)
@@ -560,8 +613,7 @@ def reference_eligibility(rows: list[dict], per_class: int, seed: int) -> tuple[
                   "n_excluded": len(excluded), "excluded": excluded}
 
 
-def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
-    """Construct a labeled OOD ranking task, never treat references as model generations."""
+def clean_reference_answers(row: dict) -> tuple[dict, dict]:
     positive, negative = {}, {}
     for answer in row["aliases"]:
         if _normal(answer):
@@ -575,6 +627,12 @@ def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
         negative.pop(key)
     if not positive or not negative:
         raise NoMixedReferenceAnswers(f"No unambiguous mixed reference answers after normalization and conflict removal: {row['fact_id']}")
+    return positive, negative
+
+
+def reference_candidates(row: dict, per_class: int, seed: int) -> list[dict]:
+    """Construct a labeled reference-ranking task, never treat references as generations."""
+    positive, negative = clean_reference_answers(row)
     # Select without detector scores, then shuffle to avoid label-dependent tie order.
     pairs = [(a, label) for label, table in ((1, positive), (0, negative)) for a in list(table.values())[:per_class]]
     digest = hashlib.sha256(f"{seed}:{row['fact_id']}".encode()).digest()
@@ -1237,6 +1295,7 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
             "schema_version": SCHEMA,
             "selected_on_validation": selected,
             "dataset": settings["dataset"],
+            "candidate_mode": settings.get("candidate_mode", "generated"),
             "split_grouping": settings.get("split_grouping", "subject" if settings["dataset"] == "akariasai/PopQA" else "question_alias"),
             "selection_rule": artifacts.get("selection_rule", "validation_auroc"),
             "ood_candidate_mode": settings.get("ood_candidate_mode", "generated"),
@@ -1260,10 +1319,9 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
         f"Frozen method: `{selected}`; selection rule: {artifacts.get('selection_rule', 'validation_auroc')}",
         f"OOD candidate mode: {settings.get('ood_candidate_mode', 'generated')}",
         f"Training/evaluation dataset: {settings['dataset']}; external OOD questions: {settings.get('ood_max_examples', 0)}.",
+        f"Candidate task: {settings.get('candidate_mode', 'generated')}.",
         "",
-        ("AUROC is for correctness. Confidence intervals bootstrap subject/question groups."
-         if settings.get("split_grouping") == "subject" else
-         "AUROC is for correctness. Confidence intervals bootstrap question/alias groups."),
+        f"AUROC is for correctness. Confidence intervals bootstrap the saved question groups ({settings.get('split_grouping', 'question_alias')}).",
         "",
         "| Method | Validation AUROC | Test AUROC | OOD AUROC |",
         "|---|---:|---:|---:|",

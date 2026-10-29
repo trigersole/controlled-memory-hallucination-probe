@@ -257,7 +257,39 @@ are isolated under `configs/popqa_in_domain/` and `outputs/popqa_in_domain/`.
 An in-domain success would show a dataset-dependent training/evaluation association;
 it would not establish cross-dataset generality or a universal truth direction.
 
-See `FACTUAL_SHIFT.md` for the cluster commands. The generated `study.json` records
+### TruthfulQA-only amendment, 2026-10-29
+
+After the PopQA-only training result, the researcher requested one further
+TruthfulQA experiment. This is another post-hoc exploratory study, not a fresh
+registered confirmation. Preserve all prior negative results. The
+[HF generation subset](https://huggingface.co/datasets/truthfulqa/truthful_qa)
+has 817 questions; a direct local data preflight found 816 eligible after removing
+reference-label conflicts, with `truthful_27` excluded. The split uses 80 questions
+for each of the two correct adapters, direction fitting, probe training and
+validation, and 200 test questions. The seed-43 split fits this real corpus and
+contains 136 test groups; this was checked without running Llama training.
+
+Keep exact duplicate questions and shared reference-source URLs within a split,
+without connecting unrelated facts through generic responses such as abstentions.
+Do not claim full semantic or pretraining disjointness. Correct adapters use a
+cleaned canonical correct reference; the incorrect adapter uses a cleaned benchmark
+incorrect reference on A's exact question set. The model/LoRA optimization settings
+are copied, but the smaller question budget means fewer optimization steps.
+
+Use up to three references per class for probe_train/validation/test, rather than
+ambiguous model generations. These are internally partitioned labeled references,
+not an official zero-shot TruthfulQA metric. Keep the fixed layer/rank/view; only
+the new in-domain validation data orient the score. Retain all controls and the
+fixed length-adjustment heads using the new probe_train labels. Report exact
+eligibility, reference-label limitations and bootstrap groups. No new result can
+retroactively overturn the previously frozen cross-dataset failure.
+
+Outputs/configurations are isolated under `truthfulqa_in_domain/`, using existing
+2-CPU, 5:50 SLURM limits. Actual model results remain pending until the cluster run.
+
+### Confirmation-study bookkeeping
+
+See `FACTUAL_SHIFT.md` for the cluster commands. The original confirmation `study.json` records
 planned seeds, copied config hashes and output directories. The SLURM array runs
 one seed at a time and uses existing requeue/resume behavior. Completed pilot runs
 are never inputs for new training or overwritten. Each seed writes the original

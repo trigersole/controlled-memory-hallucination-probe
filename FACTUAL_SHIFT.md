@@ -301,6 +301,64 @@ that data for training/validation/testing. These are **custom subject-disjoint
 in-domain results**, not official zero-shot PopQA benchmark scores. Dataset use and
 the post-hoc choice to train within PopQA must be disclosed in the final report.
 
+## TruthfulQA-only training and reference ranking
+
+This additional in-domain experiment trains three fresh adapters on TruthfulQA and
+evaluates on disjoint TruthfulQA question/reference-URL groups. It uses the same
+Llama model and LoRA optimization settings as the source configuration. Because the
+generation dataset has 817 questions, the split budget is smaller: 80 each for
+correct A, correct B, direction fitting, probe training and validation, plus 200
+test questions. The default seed-43 split was checked against the public dataset:
+816 questions pass label cleaning, 600 are selected, and test has 136 groups.
+This preflight is not a GPU/model result.
+
+References with the same normalized text but opposite labels are removed; questions
+without both remaining classes are excluded before splitting. The eligibility audit
+is saved in `data/reference_eligibility.json` (including `truthful_27`). Keep exact
+duplicate questions and shared source URLs in one subset. Shared generic answer
+phrases do not merge unrelated questions. URL grouping is conservative but does
+not guarantee complete semantic fact separation; category, lexical style, generic
+abstentions and pretraining overlap remain possible confounds.
+
+All training targets are supplied references: correct A/B use a cleaned canonical
+correct answer; the matched incorrect adapter uses a cleaned incorrect reference
+on exactly A's questions. Probe-training, validation and test score up to three
+correct and three incorrect references per question. Labels come from the benchmark,
+not substring grading of model generations. No generation is needed for these
+candidates or negative targets. This is a **custom reference-ranking task**, not
+generated-answer hallucination detection or an official TruthfulQA MC1/MC2 score.
+
+```bash
+git pull --ff-only origin main
+export PYTHON_BIN="$HOME/LLM_Haloscope/.venv/bin/python"
+export PEFT_OVERLAY="$HOME/peft-probe-overlay"
+"$PYTHON_BIN" scripts/create_truthfulqa_training_config.py \
+  configs/factual_confirmation/seed_43.yaml configs/truthfulqa_in_domain/seed_43.yaml
+sbatch slurm/factual_shift.sbatch \
+  configs/truthfulqa_in_domain/seed_43.yaml run-study-factual-shift
+```
+
+The job retains 2 CPUs, one GPU, 32 GB and 5:50 per allocation with resume/requeue.
+After an interruption, repeat only `sbatch`, preserving the config and completed
+stages. Do not use `--force`. Training, direction fitting, validation and test all
+use TruthfulQA in this run; neither TriviaQA nor PopQA adapters or rows are loaded.
+
+The primary remains layer -17/delta/fraction_8. Its sign uses the new TruthfulQA
+validation labels; this does not change the old TriviaQA-selected signs or repair
+the previous negative OOD result. Keep matched incorrect training, likelihood,
+length, PCA, random and supervised baselines. The fixed length-adjustment heads fit
+only the new probe_train references. Bootstrap question/reference-URL groups and
+report the smaller training budget when comparing datasets.
+
+```bash
+cat outputs/truthfulqa_in_domain/seed_43/factual_shift_v1/results/within_question_final/summary.md
+```
+
+This internally partitions the published validation data, so it is a custom
+in-domain exploratory experiment. Its reference style and extra label supervision
+must be stated; success would not establish general generated-answer detection.
+Old experiments and their diagnostics are left unchanged.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized

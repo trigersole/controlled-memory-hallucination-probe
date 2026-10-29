@@ -423,7 +423,7 @@ def test_confirmatory_report_scope_keeps_required_frozen_controls(tmp_path, monk
     assert ("-1/correct_a/delta/fraction_2", "answer_length_words") in comparisons
 
 
-@pytest.mark.parametrize("training_dataset", ["mandarjoshi/trivia_qa", "akariasai/PopQA"])
+@pytest.mark.parametrize("training_dataset", ["mandarjoshi/trivia_qa", "akariasai/PopQA", "truthfulqa/truthful_qa"])
 def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch, training_dataset):
     """Exercise preparation -> matched training -> candidates -> four replays -> report."""
     import datasets
@@ -453,8 +453,15 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch,
         items = [{"id": i, "question": row["question"], "obj": row["answer"]["value"],
                   "possible_answers": json.dumps([row["answer"]["value"]]), "subj_id": i // 2,
                   "subj": f"Subject {i // 2}"} for i, row in enumerate(items)]
+    elif training_dataset == "truthfulqa/truthful_qa":
+        cfg["factual_shift"].update(dataset=training_dataset, dataset_config="generation", dataset_split="validation",
+                                    split_grouping="question_source", candidate_mode="references", negative_source="references",
+                                    confirmatory_method="-1/correct_a/delta/fraction_2", length_adjustment=True)
+        items = [{"question": row["question"], "best_answer": row["answer"]["value"],
+                  "correct_answers": [row["answer"]["value"]], "incorrect_answers": ["faux city"],
+                  "source": f"https://reference.test/{i // 2}"} for i, row in enumerate(items)]
     # rc.nocontext can repeat a question once per evidence source.
-    repeated_items = [row for item in items for row in (item, copy.deepcopy(item))]
+    repeated_items = items if training_dataset == "truthfulqa/truthful_qa" else [row for item in items for row in (item, copy.deepcopy(item))]
     monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs: repeated_items)
 
     class LocalModel(Model):
@@ -475,6 +482,8 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch,
         "_generate",
         lambda m, t, rows, s, sample: ["faux city" if sample else r["answer"] for r in rows],
     )
+    if training_dataset == "truthfulqa/truthful_qa":
+        monkeypatch.setattr(fs, "_generate", lambda *args, **kwargs: pytest.fail("Reference-only task must not generate"))
     calls = {}
 
     def local_train(config, rows, adapter_root, seed, force, adapter):
@@ -494,18 +503,24 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch,
     prepared = fs._read_data(cfg)
     assert len(prepared) == len({row["fact_id"] for row in prepared}) == 24
     metadata = json.loads((fs.root(cfg) / "data" / "_SUCCESS.json").read_text())
-    assert metadata["input_questions"] == 120
+    assert metadata["input_questions"] == (60 if training_dataset == "truthfulqa/truthful_qa" else 120)
     assert metadata["unique_questions"] == 60
-    assert metadata["duplicate_rows_collapsed"] == 60
+    assert metadata["duplicate_rows_collapsed"] == (0 if training_dataset == "truthfulqa/truthful_qa" else 60)
     if training_dataset == "mandarjoshi/trivia_qa":
         assert metadata["trivia_input_rows"] == 120
-    else:
+    elif training_dataset == "akariasai/PopQA":
         assert metadata["split_grouping"] == "subject"
         subjects = {}
         for row in prepared:
             assert subjects.setdefault(row["subject_id"], row["split"]) == row["split"]
             assert row["benchmark"] == "popqa"
         assert all(row["split"] != "ood" for row in prepared)
+    else:
+        urls = {}
+        for row in prepared:
+            assert urls.setdefault(row["source_url"], row["split"]) == row["split"]
+            assert row["benchmark"] == "truthful_qa"
+        assert metadata["split_grouping"] == "question_source"
     fs.prepare_negatives(cfg)
     for adapter in fs.ADAPTERS:
         fs.train(cfg, adapter)
@@ -522,18 +537,21 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch,
     assert (result / "frozen_methods.pt").exists()
     assert (result / "predictions.jsonl").exists()
     assert fs.analyze(cfg) == result
-    if training_dataset == "akariasai/PopQA":
-        assert json.loads((result / "metrics.json").read_text())["dataset"] == "akariasai/PopQA"
+    if training_dataset != "mandarjoshi/trivia_qa":
+        assert json.loads((result / "metrics.json").read_text())["dataset"] == training_dataset
         from peft_probe.factual_final import analyze_final_checks
 
         final = analyze_final_checks(cfg)
         report = json.loads((final / "metrics.json").read_text())
         assert report["length_adjustment"] is True
-        assert report["dataset"] == "akariasai/PopQA"
-        assert report["split_grouping"] == "subject"
+        assert report["dataset"] == training_dataset
+        assert report["split_grouping"] == ("subject" if training_dataset == "akariasai/PopQA" else "question_source")
         assert "ood" not in report["datasets"]
         assert "source_length_plus_shift_probe" in report["datasets"]["test"]["methods"]
         assert (final / "length_adjustment_heads.pt").exists()
+        if training_dataset == "truthfulqa/truthful_qa":
+            assert report["candidate_mode"] == "references"
+            assert report["input_reference_eligibility"]["n_requested"] == 60
         return
     # A modified answer pool must not silently align with old features.
     replay_rows = fs._replay_rows(cfg)
