@@ -48,6 +48,10 @@ def validate(config: dict[str, Any]) -> dict[str, Any]:
     settings = config["factual_shift"]
     if settings.get("schema_version") != SCHEMA:
         raise ValueError(f"Expected factual_shift.schema_version={SCHEMA}")
+    if settings["dataset"] not in {"mandarjoshi/trivia_qa", "akariasai/PopQA"}:
+        raise ValueError("Factual training supports TriviaQA or PopQA")
+    if settings.get("split_grouping", "question_alias") not in {"question_alias", "subject"}:
+        raise ValueError("split_grouping must be question_alias or subject")
     for key in (
         "batch_size",
         "shard_size",
@@ -157,8 +161,9 @@ def deduplicate_questions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
-def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int) -> list[dict]:
-    """Keep duplicate questions and transitively overlapping answer aliases together.
+def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int,
+               grouping: str = "question_alias") -> list[dict]:
+    """Keep duplicate questions together with either shared aliases or subject IDs.
 
     A group is assigned once; excess members are discarded to honor exact budgets.
     This guards observable duplicates, not every possible semantic paraphrase.
@@ -174,7 +179,14 @@ def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int) ->
     seen: dict[tuple[str, str], int] = {}
     for i, row in enumerate(items):
         keys = [("q", _normal(row["question"]))]
-        keys += [("a", _normal(a)) for a in row["aliases"] if _normal(a)]
+        if grouping == "subject":
+            if not row.get("subject_id"):
+                raise ValueError("Subject-disjoint splitting requires subject_id")
+            keys.append(("s", str(row["subject_id"])))
+        elif grouping == "question_alias":
+            keys += [("a", _normal(a)) for a in row["aliases"] if _normal(a)]
+        else:
+            raise ValueError("Unknown split grouping")
         for key in keys:
             if key in seen:
                 parents[find(i)] = find(seen[key])
@@ -198,7 +210,7 @@ def split_rows(items: list[dict[str, Any]], sizes: dict[str, int], seed: int) ->
             result.append({**items[i], "split": split, "group_id": f"group_{find(i)}"})
             remaining[split] -= 1
     if any(remaining.values()):
-        raise ValueError(f"Not enough independent TriviaQA groups for requested sizes: {remaining}")
+        raise ValueError(f"Not enough independent factual QA groups for requested sizes: {remaining}")
     return result
 
 
@@ -209,9 +221,52 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
     if (target / "_SUCCESS.json").exists() and not force:
         return target
     settings = validate(config)
-    dataset = load_dataset(
-        settings["dataset"], settings["dataset_config"], split=settings["dataset_split"]
-    )
+    if settings["dataset"] == "akariasai/PopQA":
+        dataset = load_dataset(settings["dataset"], split=settings["dataset_split"],
+                               revision=settings.get("dataset_revision", "main"))
+        items = popqa_training_items(dataset)
+    else:
+        dataset = load_dataset(settings["dataset"], settings["dataset_config"], split=settings["dataset_split"])
+        items = trivia_training_items(dataset)
+    input_rows = len(items)
+    items = deduplicate_questions(items)
+    grouping = settings.get("split_grouping", "subject" if settings["dataset"] == "akariasai/PopQA" else "question_alias")
+    rows = split_rows(items, settings["split_sizes"], int(config["experiment"]["seed"]), grouping)
+    metadata = {"dataset": settings["dataset"], "dataset_fingerprint": getattr(dataset, "_fingerprint", None),
+                "split_grouping": grouping, "input_questions": input_rows, "unique_questions": len(items),
+                "duplicate_rows_collapsed": input_rows - len(items)}
+    if settings["dataset"] == "mandarjoshi/trivia_qa":
+        metadata.update(trivia_input_rows=input_rows, trivia_unique_questions=len(items),
+                        trivia_duplicate_rows_collapsed=input_rows - len(items))
+    if int(settings.get("ood_max_examples", 0)):
+        questions = {_normal(r["question"]) for r in rows}
+        answers = {_normal(a) for r in rows for a in r["aliases"] if _normal(a)}
+        ood = load_dataset("truthfulqa/truthful_qa", "generation", split="validation")
+        order = np.random.default_rng(int(config["experiment"]["seed"])).permutation(len(ood))
+        count = 0
+        for i in order:
+            row = ood[int(i)]
+            correct = list(dict.fromkeys([row["best_answer"], *row["correct_answers"]]))
+            if _normal(row["question"]) in questions or any(_normal(a) in answers for a in correct):
+                continue
+            rows.append(
+                {
+                    "fact_id": f"truthful_{i}", "question": row["question"], "answer": row["best_answer"],
+                    "aliases": correct, "incorrect_answers": row["incorrect_answers"], "split": "ood",
+                    "group_id": f"truthful_{i}", "benchmark": "truthful_qa",
+                }
+            )
+            count += 1
+            if count >= int(settings["ood_max_examples"]):
+                break
+        if not count:
+            raise ValueError("No eligible OOD examples")
+    atomic_jsonl(target / "rows.jsonl", rows)
+    _complete(target, {"rows_sha256": _digest(rows), "num_rows": len(rows), **metadata})
+    return target
+
+
+def trivia_training_items(dataset) -> list[dict]:
     items = []
     for i, row in enumerate(dataset):
         aliases = list(dict.fromkeys([row["answer"]["value"], *row["answer"].get("aliases", [])]))
@@ -228,49 +283,26 @@ def prepare(config: dict[str, Any], force: bool = False) -> Path:
                 "benchmark": "trivia_qa",
             }
         )
-    input_rows = len(items)
-    items = deduplicate_questions(items)
-    rows = split_rows(items, settings["split_sizes"], int(config["experiment"]["seed"]))
-    if int(settings.get("ood_max_examples", 0)):
-        questions = {_normal(r["question"]) for r in rows}
-        answers = {_normal(a) for r in rows for a in r["aliases"] if _normal(a)}
-        ood = load_dataset("truthfulqa/truthful_qa", "generation", split="validation")
-        order = np.random.default_rng(int(config["experiment"]["seed"])).permutation(len(ood))
-        count = 0
-        for i in order:
-            row = ood[int(i)]
-            correct = list(dict.fromkeys([row["best_answer"], *row["correct_answers"]]))
-            if _normal(row["question"]) in questions or any(_normal(a) in answers for a in correct):
-                continue
-            rows.append(
-                {
-                    "fact_id": f"truthful_{i}",
-                    "question": row["question"],
-                    "answer": row["best_answer"],
-                    "aliases": correct,
-                    "incorrect_answers": row["incorrect_answers"],
-                    "split": "ood",
-                    "group_id": f"truthful_{i}",
-                    "benchmark": "truthful_qa",
-                }
-            )
-            count += 1
-            if count >= int(settings["ood_max_examples"]):
-                break
-        if not count:
-            raise ValueError("No eligible OOD examples")
-    atomic_jsonl(target / "rows.jsonl", rows)
-    _complete(
-        target,
-        {
-            "rows_sha256": _digest(rows),
-            "num_rows": len(rows),
-            "trivia_input_rows": input_rows,
-            "trivia_unique_questions": len(items),
-            "trivia_duplicate_rows_collapsed": input_rows - len(items),
-        },
-    )
-    return target
+    return items
+
+
+def popqa_training_items(dataset) -> list[dict]:
+    from .base_contextual_transfer import _parse_aliases
+
+    items = []
+    for i, row in enumerate(dataset):
+        aliases = list(dict.fromkeys([str(row["obj"]), *_parse_aliases(row["possible_answers"])]))
+        aliases = [a for a in aliases if _normal(a)]
+        subject_id = row.get("subj_id")
+        if subject_id is None:
+            subject_id = row.get("subj")
+        if not aliases or not _normal(str(row["question"])) or subject_id is None:
+            raise ValueError(f"Invalid PopQA item {i}")
+        items.append({"fact_id": f"popqa_{row.get('id', i)}", "question": str(row["question"]),
+                      "answer": aliases[0], "aliases": aliases, "benchmark": "popqa",
+                      "subject_id": str(subject_id), "subject": str(row.get("subj", "")),
+                      "relation": str(row.get("prop", "")), "subject_popularity": int(row.get("s_pop", 0))})
+    return items
 
 
 def _read_data(config) -> list[dict]:
@@ -424,6 +456,10 @@ def train(config: dict, adapter: str, force: bool = False) -> Path:
 
 
 def _grade(answer: str, row: dict) -> tuple[int, str]:
+    if row["benchmark"] == "popqa":
+        from .base_contextual_transfer import _grade_popqa
+
+        return _grade_popqa(answer, row["aliases"])
     if row["benchmark"] == "trivia_qa":
         return int(
             _normal(answer) in {_normal(a) for a in row["aliases"] if _normal(a)}
@@ -1200,6 +1236,8 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
         {
             "schema_version": SCHEMA,
             "selected_on_validation": selected,
+            "dataset": settings["dataset"],
+            "split_grouping": settings.get("split_grouping", "subject" if settings["dataset"] == "akariasai/PopQA" else "question_alias"),
             "selection_rule": artifacts.get("selection_rule", "validation_auroc"),
             "ood_candidate_mode": settings.get("ood_candidate_mode", "generated"),
             "selected_transfer_on_a_validation": selected_transfer,
@@ -1211,7 +1249,7 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
                 "Negatives are reference-rejected model samples; audit for valid unlisted aliases.",
                 "Generated TruthfulQA answers exclude ambiguous reference matches; supplied references are a separate ranking task.",
                 "Supervised probe uses additional probe_train correctness labels.",
-                "Duplicate/alias grouping cannot guarantee semantic fact disjointness.",
+                "Question/alias or subject grouping cannot guarantee semantic/pretraining fact disjointness.",
             ],
         },
     )
@@ -1221,8 +1259,11 @@ def _analyze_results(config: dict, target: Path, progress, force: bool) -> Path:
         "",
         f"Frozen method: `{selected}`; selection rule: {artifacts.get('selection_rule', 'validation_auroc')}",
         f"OOD candidate mode: {settings.get('ood_candidate_mode', 'generated')}",
+        f"Training/evaluation dataset: {settings['dataset']}; external OOD questions: {settings.get('ood_max_examples', 0)}.",
         "",
-        "AUROC is for correctness. Confidence intervals bootstrap question/alias groups.",
+        ("AUROC is for correctness. Confidence intervals bootstrap subject/question groups."
+         if settings.get("split_grouping") == "subject" else
+         "AUROC is for correctness. Confidence intervals bootstrap question/alias groups."),
         "",
         "| Method | Validation AUROC | Test AUROC | OOD AUROC |",
         "|---|---:|---:|---:|",

@@ -225,6 +225,38 @@ is resumable. Inspect all three planned seeds and all denominators, then finaliz
 the bounded report irrespective of whether the new dataset is favorable. This
 follow-up is not a fresh registered confirmation of the original hypothesis.
 
+### PopQA-only training/evaluation amendment, 2026-10-29
+
+After the seed-43 frozen-transfer report showed no clear above-chance PopQA
+within-question ranking, the researcher requested an experiment training and
+evaluating wholly within PopQA. This is a distinct post-hoc in-domain study. Keep
+its results separate from TriviaQA-trained cross-dataset transfer and preserve the
+negative cross-dataset findings regardless of its outcome.
+
+Train three fresh adapters from the same Llama base checkpoint and optimization
+settings, using PopQA subsets for correct A, disjoint correct B, and matched
+incorrect targets on A's accepted negative-target subset. Use separate PopQA
+direction-fit, probe_train, validation and test subsets. Request the same counts
+as the source study. The published PopQA test partition is internally repartitioned;
+this is not an official held-out zero-shot benchmark result.
+
+Group by subject ID and normalized duplicate question before assigning splits.
+Never divide a group across subsets; discard group overflow rather than moving it
+elsewhere to meet exact counts. Shared object aliases across unrelated subjects do
+not merge groups, so frequent answer labels can recur across subsets. This grouping
+differs from the TriviaQA answer-alias-disjoint protocol and must be stated. It
+controls direct subject/question overlap, not all semantic or pretraining overlap.
+
+Keep the primary layer/view/rank fixed; choose its sign using only this new PopQA
+validation set. Retain all previous controls and the fixed quadratic log-word-length
+adjustment, fitting its two heads only on PopQA probe_train correctness labels.
+Test and bootstrap held-out PopQA mixed questions using subject/question groups.
+No TriviaQA or TruthfulQA examples enter this new pipeline. New configs/outputs
+are isolated under `configs/popqa_in_domain/` and `outputs/popqa_in_domain/`.
+
+An in-domain success would show a dataset-dependent training/evaluation association;
+it would not establish cross-dataset generality or a universal truth direction.
+
 See `FACTUAL_SHIFT.md` for the cluster commands. The generated `study.json` records
 planned seeds, copied config hashes and output directories. The SLURM array runs
 one seed at a time and uses existing requeue/resume behavior. Completed pilot runs

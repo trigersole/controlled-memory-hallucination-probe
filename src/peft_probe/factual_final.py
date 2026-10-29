@@ -143,6 +143,25 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
     heldout, methods, comparisons, selections = frozen_rows(
         cached, metrics, rows, list(_read_rows(predictions_path))
     )
+    length_models = None
+    if config["factual_shift"].get("length_adjustment"):
+        from .factual_popqa import LENGTH_ONLY, LENGTH_SHIFT, add_length_scores, length_heads
+
+        primary = selections["primary"]
+        length_models = length_heads(
+            config, cached["fitted"], rows, {"length_probe_C": 1.0}, primary=primary
+        )
+        auxiliary = {
+            primary: cached["fitted"]["artifacts"]["signs"][primary]
+            * cached["fitted"]["scores"][primary]
+        }
+        add_length_scores(auxiliary, rows, length_models, primary=primary)
+        indices = {r["row_id"]: i for i, r in enumerate(rows)}
+        for row in heldout:
+            for name in (LENGTH_ONLY, LENGTH_SHIFT):
+                row["scores"][name] = float(auxiliary[name][indices[row["row_id"]]])
+        methods.extend([LENGTH_ONLY, LENGTH_SHIFT])
+        comparisons.append((LENGTH_SHIFT, LENGTH_ONLY))
     eligibility_path = results.parent / "candidates" / "reference_eligibility.json"
     eligibility = (
         json.loads(eligibility_path.read_text(encoding="utf-8"))
@@ -173,6 +192,13 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
     output.mkdir(exist_ok=True)
     (output / "_SUCCESS.json").unlink(missing_ok=True)
     _json(manifest, provenance)
+    if length_models is not None:
+        from .io_utils import atomic_torch_save
+
+        atomic_torch_save(
+            output / "length_adjustment_heads.pt",
+            {"signature": provenance, "models": length_models},
+        )
     datasets, question_rows = {}, []
     lines = [
         "# Final within-question checks",
@@ -181,11 +207,17 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
         f"Frozen transfer source: `{selections['transfer_source']}`",
         f"Validation-selected incorrect control: `{selections['incorrect_validation_selected']}`",
         f"Matched geometry control: `{selections['incorrect_matched_geometry']}`",
+        f"Training/evaluation dataset: {metrics.get('dataset', 'not recorded in older source metrics')}",
+        f"Bootstrap split grouping: {metrics.get('split_grouping', 'question_alias')}",
         f"Selection rule: {metrics.get('selection_rule', 'validation_auroc')}",
         f"OOD candidate mode: {metrics.get('ood_candidate_mode', 'generated')}",
         "",
         "All methods use the same mixed questions, original validation signs and half credit for ties.",
-        "Questions have equal weight; paired 95% intervals resample question/alias groups.",
+        (
+            "Questions have equal weight; paired 95% intervals resample subject/question groups."
+            if metrics.get("split_grouping") == "subject"
+            else "Questions have equal weight; paired 95% intervals resample question/alias groups."
+        ),
         "Reference-mode OOD scores rank benchmark-supplied answers; they do not measure generated-answer detection.",
         "",
     ]
@@ -197,6 +229,14 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
                     f"{eligibility['n_excluded']} excluded without an unambiguous mixed reference pair."
                 ),
                 "Exclusion IDs and reasons are recorded in candidates/reference_eligibility.json.",
+                "",
+            ]
+        )
+    if length_models is not None:
+        lines.extend(
+            [
+                "Length-adjustment heads use only this run's probe_train labels, fixed quadratic log-word-length features and C=1.",
+                "The joint head additionally uses the frozen primary score; test labels never fit or tune either head.",
                 "",
             ]
         )
@@ -251,6 +291,9 @@ def analyze_final_checks(config: dict, force: bool = False) -> Path:
             "selection_rule": metrics.get("selection_rule", "validation_auroc"),
             "ood_candidate_mode": metrics.get("ood_candidate_mode", "generated"),
             "reference_eligibility": eligibility,
+            "dataset": metrics.get("dataset"),
+            "split_grouping": metrics.get("split_grouping", "question_alias"),
+            "length_adjustment": length_models is not None,
         },
     )
     _json(output / "per_question.json", question_rows)

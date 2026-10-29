@@ -396,8 +396,8 @@ def length_design(rows, score, joint):
     return np.column_stack([length, length**2, score] if joint else [length, length**2])
 
 
-def length_heads(config, fitted, rows, settings):
-    score = fitted["artifacts"]["signs"][PRIMARY] * fitted["scores"][PRIMARY]
+def length_heads(config, fitted, rows, settings, primary=PRIMARY):
+    score = fitted["artifacts"]["signs"][primary] * fitted["scores"][primary]
     train = np.asarray([r["split"] == "probe_train" and r["correct"] in (0, 1) for r in rows])
     labels = np.asarray([r["correct"] for r in rows])
     if len(np.unique(labels[train])) != 2:
@@ -417,9 +417,9 @@ def length_heads(config, fitted, rows, settings):
     return heads
 
 
-def add_length_scores(scores, rows, heads):
+def add_length_scores(scores, rows, heads, primary=PRIMARY):
     for name, joint in ((LENGTH_ONLY, False), (LENGTH_SHIFT, True)):
-        scores[name] = heads[name].predict_proba(length_design(rows, scores[PRIMARY], joint))[:, 1]
+        scores[name] = heads[name].predict_proba(length_design(rows, scores[primary], joint))[:, 1]
 
 
 def analyze(target, config, settings, signature, rows, scores, heads, fitted, original_rows):

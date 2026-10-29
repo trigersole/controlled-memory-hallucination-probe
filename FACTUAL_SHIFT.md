@@ -244,6 +244,63 @@ it reports per-seed intervals plus descriptive seed means/SD. There is no combin
 interval treating repeated seed-question observations as independent. Keep the
 negative TruthfulQA reference-ranking findings and all length controls when finalizing.
 
+## Train and evaluate entirely within PopQA
+
+This is a new in-domain experiment: fresh adapters train on PopQA, directions fit
+on a separate PopQA subset, signs use PopQA validation, and evaluation uses held-out
+PopQA questions. No TriviaQA or TruthfulQA rows are used. It measures in-domain
+performance alongside the earlier weak cross-dataset result. Because the question
+split also changes, it does not isolate a causal effect of training domain or turn
+the previous failed transfer into a successful one.
+
+Create one isolated configuration from your completed Llama factual config. This
+copies the exact base model and LoRA optimization settings, rather than loading the
+old adapters. The new run requests the source split sizes (normally 500 each for
+adapter A, adapter B, direction fitting, probe training and validation; 2,000 test).
+A and the incorrect control use the same accepted negative-target question subset.
+All subjects and normalized duplicate questions are kept within one subset.
+Common answer labels can appear across subjects/subsets; there is no global
+answer-alias disjointness claim. This avoids merging unrelated country/location
+facts into one enormous group. Bootstrap intervals use the resulting subject/
+duplicate-question groups.
+
+```bash
+git pull --ff-only origin main
+export PYTHON_BIN="$HOME/LLM_Haloscope/.venv/bin/python"
+export PEFT_OVERLAY="$HOME/peft-probe-overlay"
+export PYTHONPATH="$PWD/src:$PEFT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"
+"$PYTHON_BIN" scripts/create_popqa_training_config.py \
+  configs/factual_confirmation/seed_43.yaml configs/popqa_in_domain/seed_43.yaml
+sbatch slurm/factual_shift.sbatch \
+  configs/popqa_in_domain/seed_43.yaml run-study-factual-shift
+```
+
+The job trains three new adapters, then runs candidate generation, feature replay,
+analysis and final within-question checks. Requests stay at 2 CPUs, one GPU, 32 GB
+memory and 5:50 per allocation, with the existing resume/requeue behavior. After an
+interruption, repeat only the `sbatch` command; do not recreate configs or use force.
+
+The primary layer/view/rank stays fixed to `-17/correct_a/delta/fraction_8`; only
+its sign is chosen from the new PopQA validation split. Matched incorrect training,
+length, likelihood, PCA, random and supervised controls remain. Length-only and
+length-plus-shift logistic heads fit only the new PopQA probe-training labels, with
+the same fixed length basis/C=1 as the separate transfer diagnostic. Their paired
+test difference reports incremental prediction with extra source labels.
+
+```bash
+cat outputs/popqa_in_domain/seed_43/factual_shift_v1/results/within_question_final/summary.md
+```
+
+Pipeline diagnostics are under the same new `factual_shift_v1/` directory. Existing
+TriviaQA and frozen-PopQA-transfer outputs are untouched. For additional seeds,
+create new configs using `--seed 44` or `--seed 45`, with distinct target filenames;
+the default output path follows the selected seed. Submit one job at a time.
+
+PopQA provides one public `test` partition; this experiment internally partitions
+that data for training/validation/testing. These are **custom subject-disjoint
+in-domain results**, not official zero-shot PopQA benchmark scores. Dataset use and
+the post-hoc choice to train within PopQA must be disclosed in the final report.
+
 ## Data and controls
 
 All TriviaQA subsets come from `rc.nocontext/train`, with deterministic randomized

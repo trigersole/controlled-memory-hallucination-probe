@@ -423,7 +423,8 @@ def test_confirmatory_report_scope_keeps_required_frozen_controls(tmp_path, monk
     assert ("-1/correct_a/delta/fraction_2", "answer_length_words") in comparisons
 
 
-def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch):
+@pytest.mark.parametrize("training_dataset", ["mandarjoshi/trivia_qa", "akariasai/PopQA"])
+def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch, training_dataset):
     """Exercise preparation -> matched training -> candidates -> four replays -> report."""
     import datasets
     import peft
@@ -446,6 +447,12 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
         }
         for i in range(60)
     ]
+    if training_dataset == "akariasai/PopQA":
+        cfg["factual_shift"].update(dataset=training_dataset, dataset_config=None, dataset_split="test", split_grouping="subject",
+                                    confirmatory_method="-1/correct_a/delta/fraction_2", length_adjustment=True)
+        items = [{"id": i, "question": row["question"], "obj": row["answer"]["value"],
+                  "possible_answers": json.dumps([row["answer"]["value"]]), "subj_id": i // 2,
+                  "subj": f"Subject {i // 2}"} for i, row in enumerate(items)]
     # rc.nocontext can repeat a question once per evidence source.
     repeated_items = [row for item in items for row in (item, copy.deepcopy(item))]
     monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs: repeated_items)
@@ -487,9 +494,18 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
     prepared = fs._read_data(cfg)
     assert len(prepared) == len({row["fact_id"] for row in prepared}) == 24
     metadata = json.loads((fs.root(cfg) / "data" / "_SUCCESS.json").read_text())
-    assert metadata["trivia_input_rows"] == 120
-    assert metadata["trivia_unique_questions"] == 60
-    assert metadata["trivia_duplicate_rows_collapsed"] == 60
+    assert metadata["input_questions"] == 120
+    assert metadata["unique_questions"] == 60
+    assert metadata["duplicate_rows_collapsed"] == 60
+    if training_dataset == "mandarjoshi/trivia_qa":
+        assert metadata["trivia_input_rows"] == 120
+    else:
+        assert metadata["split_grouping"] == "subject"
+        subjects = {}
+        for row in prepared:
+            assert subjects.setdefault(row["subject_id"], row["split"]) == row["split"]
+            assert row["benchmark"] == "popqa"
+        assert all(row["split"] != "ood" for row in prepared)
     fs.prepare_negatives(cfg)
     for adapter in fs.ADAPTERS:
         fs.train(cfg, adapter)
@@ -506,6 +522,19 @@ def test_complete_staged_pipeline_with_small_local_models(tmp_path, monkeypatch)
     assert (result / "frozen_methods.pt").exists()
     assert (result / "predictions.jsonl").exists()
     assert fs.analyze(cfg) == result
+    if training_dataset == "akariasai/PopQA":
+        assert json.loads((result / "metrics.json").read_text())["dataset"] == "akariasai/PopQA"
+        from peft_probe.factual_final import analyze_final_checks
+
+        final = analyze_final_checks(cfg)
+        report = json.loads((final / "metrics.json").read_text())
+        assert report["length_adjustment"] is True
+        assert report["dataset"] == "akariasai/PopQA"
+        assert report["split_grouping"] == "subject"
+        assert "ood" not in report["datasets"]
+        assert "source_length_plus_shift_probe" in report["datasets"]["test"]["methods"]
+        assert (final / "length_adjustment_heads.pt").exists()
+        return
     # A modified answer pool must not silently align with old features.
     replay_rows = fs._replay_rows(cfg)
     replay_rows[-1]["answer"] = "changed text"
